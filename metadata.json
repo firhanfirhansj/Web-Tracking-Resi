@@ -1,0 +1,6 @@
+{
+  "name": "LacakResi Pro – Tracking Resi & Cek Ongkir",
+  "description": "Aplikasi tracking resi otomatis hingga 50 resi sekaligus dan cek estimasi ongkir berbasis kecamatan, terkoneksi dengan BinderByte API. Berjalan di Vercel sebagai serverless function.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
