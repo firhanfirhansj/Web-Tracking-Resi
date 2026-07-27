@@ -1,14 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { COST_COURIERS } from '../data/couriers';
 import { CostServiceOption } from '../types';
 import {
   calculateShippingCost,
-  fetchProvinces,
-  fetchCities,
-  fetchDistricts,
-  type Province,
-  type City,
-  type District
+  fetchLocations,
+  type LocationResult
 } from '../services/api';
 import {
   Calculator,
@@ -20,24 +16,48 @@ import {
   Check,
   AlertCircle,
   MapPin,
-  Building2,
-  Search
+  Search,
+  X
 } from 'lucide-react';
 
-type LocationLevel = 'city' | 'district';
+/**
+ * ✅ Cek Ongkir — overhaul sesuai dokumentasi BinderByte (perbaikan.txt).
+ *
+ * Perubahan utama:
+ *   - Tidak ada lagi dropdown Provinsi → Kota → Kecamatan (endpoint
+ *     /v1/provinces, /v1/cities, /v1/districts sudah dihapus BinderByte).
+ *   - Pakai SATU search box yang panggil /v1/locations?search=<keyword>.
+ *     User ketik mis. "Cilegon" atau "Cibiru Bandung", dapat list hasil
+ *     (village/district/city/province), klik → jadi origin/destination.
+ *   - ID yang dipilih diteruskan mentah (mis. "33.74.01.1001" /
+ *     "village_33.74.01.1001") ke /api/cost. Server proxy di api/index.ts
+ *     otomatis mem-prefi-kan sesuai tipenya.
+ *   - Weight tetap input dalam GRAM dari sisi UX, server yang konversi
+ *     ke kilogram.
+ */
+
+type LocationPickerTarget = 'origin' | 'destination';
+
+interface PickedLocation {
+  id: string;       // id mentah dari BinderByte (mis. "33.74.01.1001")
+  label: string;    // label lengkap dari BinderByte
+  type: string;     // village | district | city | province
+}
 
 export const CostCalculator: React.FC = () => {
-  const [provinces, setProvinces] = useState<Province[]>([]);
-  const [cities, setCities] = useState<City[]>([]);
-  const [originDistricts, setOriginDistricts] = useState<District[]>([]);
-  const [destinationDistricts, setDestinationDistricts] = useState<District[]>([]);
+  const [origin, setOrigin] = useState<PickedLocation | null>(null);
+  const [destination, setDestination] = useState<PickedLocation | null>(null);
 
-  const [originProvince, setOriginProvince] = useState<string>('');
-  const [originCity, setOriginCity] = useState<string>('');
-  const [originDistrict, setOriginDistrict] = useState<string>('');
-  const [destinationProvince, setDestinationProvince] = useState<string>('');
-  const [destinationCity, setDestinationCity] = useState<string>('');
-  const [destinationDistrict, setDestinationDistrict] = useState<string>('');
+  const [search, setSearch] = useState<{ origin: string; destination: string }>({
+    origin: '',
+    destination: ''
+  });
+  const [activePicker, setActivePicker] = useState<LocationPickerTarget | null>(null);
+  const [searchResults, setSearchResults] = useState<LocationResult[]>([]);
+  const [searching, setSearching] = useState<boolean>(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<number | null>(null);
 
   const [weight, setWeight] = useState<number>(1000);
   const [useVolumetric, setUseVolumetric] = useState<boolean>(false);
@@ -54,117 +74,69 @@ export const CostCalculator: React.FC = () => {
   const [results, setResults] = useState<CostServiceOption[]>([]);
   const [searched, setSearched] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [loadingLocations, setLoadingLocations] = useState<boolean>(false);
-  const [locationError, setLocationError] = useState<string | null>(null);
-  const [citySearch, setCitySearch] = useState<{ origin: string; destination: string }>({
-    origin: '',
-    destination: ''
-  });
 
-  // Load provinces + cities on mount
+  // Debounced search ke /v1/locations
   useEffect(() => {
-    let mounted = true;
-    setLoadingLocations(true);
-    setLocationError(null);
-    Promise.all([fetchProvinces(), fetchCities()])
-      .then(([provs, cts]) => {
-        if (!mounted) return;
-        setProvinces(provs);
-        setCities(cts);
-      })
-      .catch((e) => {
-        if (!mounted) return;
-        setLocationError(e?.message || 'Gagal memuat data lokasi dari BinderByte');
-      })
-      .finally(() => mounted && setLoadingLocations(false));
-    return () => {
-      mounted = false;
-    };
-  }, []);
+    if (!activePicker) return;
+    const term = search[activePicker].trim();
 
-  // Filter cities by province
-  const filteredOriginCities = useMemo(
-    () => cities.filter((c) => !originProvince || c.province_id === originProvince),
-    [cities, originProvince]
-  );
-  const filteredDestinationCities = useMemo(
-    () => cities.filter((c) => !destinationProvince || c.province_id === destinationProvince),
-    [cities, destinationProvince]
-  );
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    // Cancel request sebelumnya
+    if (searchAbortRef.current) searchAbortRef.current.abort();
 
-  // Search filter by city name — selalu sertakan kota yang sedang terpilih
-  // (originCity / destinationCity) meskipun tidak cocok dengan query, supaya
-  // <select> tidak di-reset ke kosong oleh browser ketika user mengetik.
-  const visibleOriginCities = useMemo(() => {
-    const q = citySearch.origin.trim().toLowerCase();
-    const base = q
-      ? filteredOriginCities.filter((c) => c.city_name.toLowerCase().includes(q))
-      : filteredOriginCities;
-    const selected = originCity
-      ? filteredOriginCities.find((c) => c.city_id === originCity)
-      : undefined;
-    if (selected && !base.some((c) => c.city_id === selected.city_id)) {
-      return [selected, ...base].slice(0, 200);
-    }
-    return base.slice(0, 200);
-  }, [filteredOriginCities, citySearch.origin, originCity]);
-
-  const visibleDestinationCities = useMemo(() => {
-    const q = citySearch.destination.trim().toLowerCase();
-    const base = q
-      ? filteredDestinationCities.filter((c) => c.city_name.toLowerCase().includes(q))
-      : filteredDestinationCities;
-    const selected = destinationCity
-      ? filteredDestinationCities.find((c) => c.city_id === destinationCity)
-      : undefined;
-    if (selected && !base.some((c) => c.city_id === selected.city_id)) {
-      return [selected, ...base].slice(0, 200);
-    }
-    return base.slice(0, 200);
-  }, [filteredDestinationCities, citySearch.destination, destinationCity]);
-
-  // Load districts when city changes
-  useEffect(() => {
-    if (!originCity) {
-      setOriginDistricts([]);
-      setOriginDistrict('');
+    if (term.length < 3) {
+      setSearchResults([]);
+      setSearching(false);
+      setSearchError(null);
       return;
     }
-    let mounted = true;
-    fetchDistricts(originCity)
-      .then((d) => mounted && setOriginDistricts(d))
-      .catch(() => mounted && setOriginDistricts([]));
-    return () => {
-      mounted = false;
-    };
-  }, [originCity]);
 
-  useEffect(() => {
-    if (!destinationCity) {
-      setDestinationDistricts([]);
-      setDestinationDistrict('');
-      return;
-    }
-    let mounted = true;
-    fetchDistricts(destinationCity)
-      .then((d) => mounted && setDestinationDistricts(d))
-      .catch(() => mounted && setDestinationDistricts([]));
-    return () => {
-      mounted = false;
-    };
-  }, [destinationCity]);
+    setSearching(true);
+    setSearchError(null);
+    debounceRef.current = window.setTimeout(async () => {
+      const controller = new AbortController();
+      searchAbortRef.current = controller;
+      try {
+        const list = await fetchLocations(term);
+        if (!controller.signal.aborted) {
+          setSearchResults(list);
+        }
+      } catch (e: any) {
+        if (!controller.signal.aborted) {
+          setSearchError(e?.message || 'Gagal mencari lokasi');
+          setSearchResults([]);
+        }
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
+      }
+    }, 350);
 
-  const calculatedWeight = useVolumetric
-    ? Math.max(weight, Math.ceil((length * width * height) / 6000) * 1000)
-    : weight;
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, [search, activePicker]);
 
   const handleSwapLocation = () => {
-    setOriginProvince(destinationProvince);
-    setOriginCity(destinationCity);
-    setOriginDistrict(destinationDistrict);
-    setDestinationProvince(originProvince);
-    setDestinationCity(originCity);
-    setDestinationDistrict(originDistrict);
+    setOrigin(destination);
+    setDestination(origin);
+  };
+
+  const handlePickLocation = (loc: LocationResult, target: LocationPickerTarget) => {
+    const picked: PickedLocation = {
+      id: loc.id,
+      label: loc.label,
+      type: loc.type
+    };
+    if (target === 'origin') setOrigin(picked);
+    else setDestination(picked);
+    setActivePicker(null);
+    setSearchResults([]);
+    setSearch((s) => ({ ...s, [target]: '' }));
+  };
+
+  const handleClearLocation = (target: LocationPickerTarget) => {
+    if (target === 'origin') setOrigin(null);
+    else setDestination(null);
   };
 
   const handleToggleCourier = (code: string) => {
@@ -173,6 +145,10 @@ export const CostCalculator: React.FC = () => {
     );
   };
 
+  const calculatedWeight = useVolumetric
+    ? Math.max(weight, Math.ceil((length * width * height) / 6000) * 1000)
+    : weight;
+
   const handleCalculate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setLoading(true);
@@ -180,30 +156,23 @@ export const CostCalculator: React.FC = () => {
     setSearched(true);
     setResults([]);
 
-    const originCode = originDistrict || originCity;
-    const destinationCode = destinationDistrict || destinationCity;
-    const originType: LocationLevel = originDistrict ? 'district' : 'city';
-    const destinationType: LocationLevel = destinationDistrict ? 'district' : 'city';
-
-    if (!originCode || !destinationCode) {
-      setError('Pilih kota/kecamatan asal dan tujuan terlebih dahulu.');
+    if (!origin || !destination) {
+      setError('Pilih lokasi asal dan tujuan terlebih dahulu.');
       setLoading(false);
       return;
     }
 
     try {
       const data = await calculateShippingCost(
-        originCode,
-        destinationCode,
+        origin.id,
+        destination.id,
         calculatedWeight,
-        selectedCouriers,
-        originType,
-        destinationType
+        selectedCouriers
       );
       setResults(data);
       if (data.length === 0) {
         setError(
-          'Tidak ada data ongkir yang dikembalikan. Coba pilih level kota saja, atau cek subscription BinderByte kamu.'
+          'Tidak ada data ongkir yang dikembalikan. Coba pilih lokasi lain atau cek subscription BinderByte Anda.'
         );
       }
     } catch (err: any) {
@@ -213,9 +182,6 @@ export const CostCalculator: React.FC = () => {
     }
   };
 
-  // ✅ FIX Bug #3: Ambil kelompok angka PERTAMA saja dari string ETD.
-  // Sebelumnya `replace(/\D/g, '')` menggabungkan semua digit (mis. "1-2 Hari" → "12"
-  // bukan "1"), sehingga pengurutan "Tercepat" menjadi salah.
   const extractEtdDays = (etdStr: string): number => {
     const match = etdStr.match(/\d+/);
     return match ? parseInt(match[0], 10) : 99;
@@ -236,12 +202,140 @@ export const CostCalculator: React.FC = () => {
       maximumFractionDigits: 0
     }).format(val);
 
-  const hasDistrictSelection = Boolean(originDistrict || destinationDistrict);
-  const level: LocationLevel = hasDistrictSelection ? 'district' : 'city';
+  // === Render helper untuk picker asal/tujuan ===
+  const renderLocationField = (target: LocationPickerTarget) => {
+    const picked = target === 'origin' ? origin : destination;
+    const isActive = activePicker === target;
+
+    if (isActive) {
+      return (
+        <div className="space-y-2">
+          <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+            {target === 'origin' ? 'Asal (Origin)' : 'Tujuan (Destination)'}
+          </label>
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              autoFocus
+              value={search[target]}
+              onChange={(e) =>
+                setSearch((s) => ({ ...s, [target]: e.target.value }))
+              }
+              placeholder="Ketik min. 3 huruf: nama kota, kecamatan, atau desa…"
+              className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl pl-9 pr-9 py-2.5 focus:outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={() => setActivePicker(null)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-500 hover:text-slate-200"
+              title="Tutup"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {searching && (
+            <div className="text-xs text-slate-400 flex items-center gap-1.5">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              <span>Mencari di BinderByte…</span>
+            </div>
+          )}
+
+          {searchError && (
+            <div className="text-xs text-rose-400 flex items-center gap-1.5">
+              <AlertCircle className="w-3 h-3" />
+              <span>{searchError}</span>
+            </div>
+          )}
+
+          {!searching &&
+            !searchError &&
+            search[target].trim().length >= 3 &&
+            searchResults.length === 0 && (
+              <div className="text-xs text-slate-500">
+                Tidak ada hasil untuk "{search[target]}".
+              </div>
+            )}
+
+          {searchResults.length > 0 && (
+            <ul className="bg-slate-950 border border-slate-800 rounded-xl max-h-72 overflow-y-auto divide-y divide-slate-800">
+              {searchResults.map((loc, idx) => (
+                <li key={`${loc.id}-${idx}`}>
+                  <button
+                    type="button"
+                    onClick={() => handlePickLocation(loc, target)}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800/70 transition-colors flex items-start gap-2"
+                  >
+                    <span className="mt-0.5 px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase tracking-wider shrink-0">
+                      {loc.type}
+                    </span>
+                    <span className="text-xs text-slate-200">{loc.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+          {target === 'origin' ? 'Asal (Origin)' : 'Tujuan (Destination)'}
+        </label>
+        {picked ? (
+          <div className="flex items-start gap-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase tracking-wider">
+                  {picked.type}
+                </span>
+                <span className="text-[10px] font-mono text-slate-500 truncate">
+                  {picked.id}
+                </span>
+              </div>
+              <div className="text-xs text-slate-200 font-medium leading-snug">
+                {picked.label}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setActivePicker(target);
+                  setSearch((s) => ({ ...s, [target]: '' }));
+                }}
+                className="px-2 py-1 text-[10px] rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300"
+              >
+                Ganti
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearLocation(target)}
+                className="px-2 py-1 text-[10px] rounded-md bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-300"
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setActivePicker(target)}
+            className="w-full bg-slate-950 border border-slate-800 border-dashed text-slate-400 hover:text-slate-200 hover:border-slate-600 rounded-xl py-3 text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+          >
+            <MapPin className="w-4 h-4" />
+            <span>Klik untuk pilih {target === 'origin' ? 'asal' : 'tujuan'}…</span>
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Top Form Card */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center">
@@ -250,189 +344,39 @@ export const CostCalculator: React.FC = () => {
           <div>
             <h2 className="text-xl font-bold text-white">Cek Estimasi Ongkir</h2>
             <p className="text-xs text-slate-400">
-              Data provinsi, kota, dan kecamatan langsung dari BinderByte API
+              Cari nama kota/kecamatan/desa, lalu pilih dari hasil pencarian BinderByte.
             </p>
           </div>
         </div>
 
-        {locationError && (
-          <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-400 text-sm flex items-center gap-3">
-            <AlertCircle className="w-5 h-5 shrink-0" />
-            <span>{locationError}</span>
-          </div>
-        )}
-
         <form onSubmit={handleCalculate} className="space-y-5">
-          {/* Province / City / District selectors */}
+          {/* Origin / Destination picker (grid 11-col seperti layout sebelumnya) */}
           <div className="grid grid-cols-1 md:grid-cols-11 gap-3 items-start">
-            {/* ORIGIN */}
-            <div className="md:col-span-5 space-y-2">
-              <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                Asal (Origin)
-              </label>
-              <select
-                value={originProvince}
-                onChange={(e) => {
-                  setOriginProvince(e.target.value);
-                  setOriginCity('');
-                  setOriginDistrict('');
-                }}
-                disabled={loadingLocations}
-                className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-              >
-                <option value="">— Pilih Provinsi —</option>
-                {provinces.map((p) => (
-                  <option key={p.province_id} value={p.province_id}>
-                    {p.province}
-                  </option>
-                ))}
-              </select>
+            <div className="md:col-span-5">{renderLocationField('origin')}</div>
 
-              {/* ✅ FIX UX #4: kolom pencarian dipindahkan ke ATAS select kota
-                  agar alur input lebih natural bagi pengguna (ketik → pilih). */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={citySearch.origin}
-                  onChange={(e) => setCitySearch({ ...citySearch, origin: e.target.value })}
-                  placeholder="Cari kota/kabupaten..."
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="relative">
-                <Building2 className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <select
-                  value={originCity}
-                  onChange={(e) => {
-                    setOriginCity(e.target.value);
-                    setOriginDistrict('');
-                  }}
-                  disabled={loadingLocations}
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl pl-9 pr-3 py-2.5 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                >
-                  <option value="">— Pilih Kota/Kabupaten —</option>
-                  {visibleOriginCities.map((c) => (
-                    <option key={c.city_id} value={c.city_id}>
-                      {c.type} {c.city_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {originDistricts.length > 0 && (
-                <div className="relative">
-                  <MapPin className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <select
-                    value={originDistrict}
-                    onChange={(e) => setOriginDistrict(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">— Pilih Kecamatan (opsional) —</option>
-                    {originDistricts.map((d) => (
-                      <option key={d.district_id} value={d.district_id}>
-                        {d.district_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            {/* SWAP */}
             <div className="md:col-span-1 flex justify-center pt-7">
               <button
                 type="button"
                 onClick={handleSwapLocation}
-                className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700"
+                disabled={!origin || !destination}
+                className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Tukar Asal & Tujuan"
               >
                 <ArrowRightLeft className="w-4 h-4 text-blue-400" />
               </button>
             </div>
 
-            {/* DESTINATION */}
-            <div className="md:col-span-5 space-y-2">
-              <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                Tujuan (Destination)
-              </label>
-              <select
-                value={destinationProvince}
-                onChange={(e) => {
-                  setDestinationProvince(e.target.value);
-                  setDestinationCity('');
-                  setDestinationDistrict('');
-                }}
-                disabled={loadingLocations}
-                className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-              >
-                <option value="">— Pilih Provinsi —</option>
-                {provinces.map((p) => (
-                  <option key={`d-prov-${p.province_id}`} value={p.province_id}>
-                    {p.province}
-                  </option>
-                ))}
-              </select>
-
-              {/* ✅ FIX UX #4: kolom pencarian dipindahkan ke ATAS select kota. */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={citySearch.destination}
-                  onChange={(e) => setCitySearch({ ...citySearch, destination: e.target.value })}
-                  placeholder="Cari kota/kabupaten..."
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="relative">
-                <Building2 className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <select
-                  value={destinationCity}
-                  onChange={(e) => {
-                    setDestinationCity(e.target.value);
-                    setDestinationDistrict('');
-                  }}
-                  disabled={loadingLocations}
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl pl-9 pr-3 py-2.5 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                >
-                  <option value="">— Pilih Kota/Kabupaten —</option>
-                  {visibleDestinationCities.map((c) => (
-                    <option key={`d-${c.city_id}`} value={c.city_id}>
-                      {c.type} {c.city_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {destinationDistricts.length > 0 && (
-                <div className="relative">
-                  <MapPin className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <select
-                    value={destinationDistrict}
-                    onChange={(e) => setDestinationDistrict(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">— Pilih Kecamatan (opsional) —</option>
-                    {destinationDistricts.map((d) => (
-                      <option key={`d-d-${d.district_id}`} value={d.district_id}>
-                        {d.district_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
+            <div className="md:col-span-5">{renderLocationField('destination')}</div>
           </div>
 
           <div className="text-[11px] text-slate-400 -mt-2">
-            Level perhitungan:{' '}
-            <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-300">
-              {level === 'district' ? 'Kecamatan (district)' : 'Kota/Kabupaten'}
-            </span>
-            . Mode kecamatan butuh subscription BinderByte minimal Starter.
+            ID lokasi mengikuti format BinderByte (
+            <span className="font-mono text-slate-300">
+              village_33.22.11.2003
+            </span>{' '}
+            atau{' '}
+            <span className="font-mono text-slate-300">dist_36.72.08</span>).
+            Pilih dari hasil pencarian untuk akurasi maksimal.
           </div>
 
           {/* Weight & Volumetric section */}
@@ -527,7 +471,8 @@ export const CostCalculator: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-semibold text-slate-300">
-                Pilihan Ekspedisi ({COST_COURIERS.length} kurir support ongkir):
+                Pilihan Ekspedisi ({COST_COURIERS.length} kurir support ongkir sesuai
+                dokumentasi BinderByte):
               </label>
               <div className="flex items-center gap-2">
                 <button
@@ -575,7 +520,7 @@ export const CostCalculator: React.FC = () => {
 
           <button
             type="submit"
-            disabled={loading || selectedCouriers.length === 0}
+            disabled={loading || selectedCouriers.length === 0 || !origin || !destination}
             className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (

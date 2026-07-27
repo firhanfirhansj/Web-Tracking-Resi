@@ -124,6 +124,10 @@ const TRACK_COURIERS = [
   { code: 'rekomendasi', description: 'Kurir Rekomendasi BinderByte' }
 ];
 
+// ✅ Dokumentasi BinderByte (perbaikan.txt): Cek Ongkir hanya support 12 kurir:
+//   jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide, jnt, wahana, spx
+// Sebelumnya kita kirim 22 kurir (termasuk rex, indah, jet, dll yang ternyata
+// tidak support endpoint /v1/cost BinderByte).
 const COST_COURIERS = [
   { code: 'jne',      description: 'JNE Express' },
   { code: 'pos',      description: 'POS Indonesia' },
@@ -134,19 +138,9 @@ const COST_COURIERS = [
   { code: 'ninja',    description: 'Ninja Xpress' },
   { code: 'sap',      description: 'SAP Express' },
   { code: 'ide',      description: 'ID Express' },
-  { code: 'j&t',      description: 'J&T Express Indonesia' },
+  { code: 'jnt',      description: 'J&T Express Indonesia' },
   { code: 'wahana',   description: 'Wahana Express' },
-  { code: 'spx',      description: 'Shopee Express' },
-  { code: 'rex',      description: 'REX Express' },
-  { code: 'indah',    description: 'Indah Logistik Cargo' },
-  { code: 'dse',      description: 'DSE Express' },
-  { code: 'slis',     description: 'Solusi Express' },
-  { code: 'first',    description: 'First Logistics' },
-  { code: 'ncs',      description: 'NCS Kobra' },
-  { code: 'jet',      description: 'JET Express' },
-  { code: 'star',     description: 'Star Cargo' },
-  { code: 'idl',      description: 'Idl Cargo' },
-  { code: 'pck',      description: 'Paxel Kartolo' }
+  { code: 'spx',      description: 'Shopee Express' }
 ];
 
 // ------------------------------------------------------------------
@@ -188,46 +182,28 @@ app.get('/api/couriers/cost', (_req, res) => {
   res.json({ status: 200, data: COST_COURIERS });
 });
 
-// --- Location proxy endpoints (proxy ke BinderByte) ---
+// --- Location proxy (sesuai dokumentasi BinderByte baru) ---
+// Dokumentasi BinderByte menggunakan SATU endpoint:
+//   GET /v1/locations?search=<keyword>&api_key=<key>
+// yang mengembalikan list lokasi (village/district/city/province) sekaligus.
+// Response: { code, message, data: [{ id, type, label }] }
 
-app.get('/api/provinces', async (_req, res) => {
+app.get('/api/locations', async (req, res) => {
   const apiKey = ensureApiKey(res);
   if (!apiKey) return;
-  try {
-    const r = await fetch(`${BASE_URL}/provinces?api_key=${encodeURIComponent(apiKey)}`);
-    const j = await r.json();
-    res.status(r.status).json(j);
-  } catch (e: any) {
-    res.status(502).json({ status: 502, message: `Upstream error: ${e?.message || 'unknown'}` });
+  const search = ((req.query.search as string) || '').trim();
+  // Endpoint BinderByte WAJIB dapat parameter 'search' (minimal 3 karakter).
+  if (search.length < 3) {
+    return res.status(400).json({
+      status: 400,
+      code: 400,
+      message: 'Parameter "search" wajib diisi (minimal 3 karakter).'
+    });
   }
-});
-
-app.get('/api/cities', async (req, res) => {
-  const apiKey = ensureApiKey(res);
-  if (!apiKey) return;
-  const province = (req.query.province as string) || '';
-  const url = province
-    ? `${BASE_URL}/cities?api_key=${encodeURIComponent(apiKey)}&province=${encodeURIComponent(province)}`
-    : `${BASE_URL}/cities?api_key=${encodeURIComponent(apiKey)}`;
   try {
+    const url = `${BASE_URL}/locations?api_key=${encodeURIComponent(apiKey)}&search=${encodeURIComponent(search)}`;
     const r = await fetch(url);
-    const j = await r.json();
-    res.status(r.status).json(j);
-  } catch (e: any) {
-    res.status(502).json({ status: 502, message: `Upstream error: ${e?.message || 'unknown'}` });
-  }
-});
-
-app.get('/api/districts', async (req, res) => {
-  const apiKey = ensureApiKey(res);
-  if (!apiKey) return;
-  const city = (req.query.city as string) || '';
-  const url = city
-    ? `${BASE_URL}/districts?api_key=${encodeURIComponent(apiKey)}&city=${encodeURIComponent(city)}`
-    : `${BASE_URL}/districts?api_key=${encodeURIComponent(apiKey)}`;
-  try {
-    const r = await fetch(url);
-    const j = await r.json();
+    const j = await r.json().catch(() => ({} as any));
     res.status(r.status).json(j);
   } catch (e: any) {
     res.status(502).json({ status: 502, message: `Upstream error: ${e?.message || 'unknown'}` });
@@ -242,17 +218,35 @@ app.get('/api/track', async (req, res) => {
 
   const courier = (req.query.courier as string) || 'jne';
   const awb = (req.query.awb as string) || '';
+  // ✅ FIX Bug #3 (JNE): sesuai dokumentasi BinderByte
+  //   /v1/track?api_key=...&courier=jne&awb=...&number=xxxxx
+  // untuk kurir JNE, sertakan "number" (nomor telepon penerima) bila tersedia
+  // agar tracking bisa menemukan data di sistem JNE.
+  const number = ((req.query.number as string) || '').trim();
 
   if (!awb) {
     return res.status(400).json({ status: 400, message: 'Nomor resi (awb) wajib diisi' });
   }
 
   try {
-    const url = `${BASE_URL}/track?api_key=${encodeURIComponent(apiKey)}&courier=${encodeURIComponent(courier)}&awb=${encodeURIComponent(awb)}`;
+    const params = new URLSearchParams({
+      api_key: apiKey,
+      courier,
+      awb
+    });
+    // Sertakan "number" hanya untuk JNE (sesuai dokumentasi BinderByte).
+    if (courier.toLowerCase() === 'jne' && number) {
+      params.set('number', number);
+    }
+    const url = `${BASE_URL}/track?${params.toString()}`;
     const upstream = await fetch(url);
-    const payload = await upstream.json();
+    const payload = await upstream.json().catch(() => ({} as any));
 
-    if (upstream.ok && payload?.status === 200) {
+    // ✅ Handle dua format response BinderByte:
+    //   - Lama: { status: 200 }
+    //   - Baru (perbaikan.txt): { code: "200" }
+    const okCode = payload?.code === '200' || payload?.code === 200 || payload?.status === 200;
+    if (upstream.ok && okCode) {
       return res.json({
         status: 200,
         message: payload.message || 'OK',
@@ -261,7 +255,7 @@ app.get('/api/track', async (req, res) => {
     }
 
     return res.status(upstream.status || 502).json({
-      status: payload?.status || upstream.status || 502,
+      status: payload?.code || payload?.status || upstream.status || 502,
       message: payload?.message || 'Gagal melacak resi dari BinderByte',
       error: payload?.error
     });
@@ -280,7 +274,7 @@ app.post('/api/track/bulk', async (req, res) => {
   const apiKey = ensureApiKey(res);
   if (!apiKey) return;
 
-  const items = req.body.items as { id: string; awb: string; courier: string }[];
+  const items = req.body.items as { id: string; awb: string; courier: string; number?: string }[];
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ status: 400, message: 'Array items tidak boleh kosong' });
   }
@@ -294,10 +288,22 @@ app.post('/api/track/bulk', async (req, res) => {
       return { id: item.id, awb, courier, status: 'error' as const, errorMessage: 'Nomor resi kosong' };
     }
     try {
-      const url = `${BASE_URL}/track?api_key=${encodeURIComponent(apiKey)}&courier=${encodeURIComponent(courier)}&awb=${encodeURIComponent(awb)}`;
+      const params = new URLSearchParams({
+        api_key: apiKey,
+        courier,
+        awb
+      });
+      // ✅ FIX Bug #3: untuk JNE, teruskan nomor telepon penerima.
+      const number = (item.number || '').trim();
+      if (courier.toLowerCase() === 'jne' && number) {
+        params.set('number', number);
+      }
+      const url = `${BASE_URL}/track?${params.toString()}`;
       const upstream = await fetch(url);
-      const payload = await upstream.json();
-      if (upstream.ok && payload?.status === 200) {
+      const payload = await upstream.json().catch(() => ({} as any));
+      // ✅ Handle format code lama (status:200) & baru (code:"200")
+      const okCode = payload?.code === '200' || payload?.code === 200 || payload?.status === 200;
+      if (upstream.ok && okCode) {
         return {
           id: item.id,
           awb,
@@ -311,7 +317,7 @@ app.post('/api/track/bulk', async (req, res) => {
         awb,
         courier,
         status: 'error' as const,
-        errorMessage: payload?.message || `BinderByte mengembalikan status ${payload?.status || upstream.status}`
+        errorMessage: payload?.message || `BinderByte mengembalikan status ${payload?.code || payload?.status || upstream.status}`
       };
     } catch (err: any) {
       return {
@@ -336,20 +342,39 @@ app.post('/api/track/bulk', async (req, res) => {
 });
 
 // --- Cek Ongkir (Shipping Cost) ---
+// ✅ Dokumentasi BinderByte (perbaikan.txt):
+//   POST/GET /v1/cost dengan parameter:
+//     api_key, origin (district ID), destination (district ID),
+//     weight (Kg, bukan gram!), courier (comma-separated, maks 12 kurir)
+//   Response sukses:
+//     {
+//       code: "200", message: "Successfully calculated cost",
+//       data: {
+//         origin: { id, label },
+//         destination: { id, label },
+//         weight: "1",
+//         results: [{ code, name, costs: [{ code, name, service, type, price, estimated }] }]
+//       }
+//     }
+//
+//   Field penting yang harus disesuaikan:
+//     - weight dalam KILOGRAM (sebelumnya kita kirim gram — bug!)
+//     - origin/destination ID ber-prefix "dist_" atau "village_" sesuai
+//       hasil dari /v1/locations (sebelumnya kita pakai ID numeric — bug!)
+//     - daftar kurir hanya 12 (sudah disesuaikan di COST_COURIERS di atas)
+//     - response pakai `code` (string), bukan `status` (number)
+//     - path data: data.results[].costs[].price & .estimated
 
-function normalizeCostItem(raw: any, courierCode: string, courierName: string) {
-  const costArr: any[] = Array.isArray(raw?.cost) ? raw.cost : [];
-  const cheapest = costArr[0] || {};
-  const value = Number(cheapest.value) || 0;
-  const etd = cheapest.etd || raw?.last_etd || '';
+function normalizeCostItem(raw: any, fallbackCourierCode: string, fallbackCourierName: string) {
+  // raw shape (BinderByte baru): { code, name, service, type, price, estimated }
   return {
-    code: courierCode,
+    code: raw?.code || fallbackCourierCode,
     service: raw?.service || '',
-    description: raw?.description || `${courierName} ${raw?.service || ''}`.trim(),
-    cost: value,
-    etd: etd ? `${etd} Hari` : '',
-    courierCode,
-    courierName
+    description: raw?.type || raw?.name || `${fallbackCourierName} ${raw?.service || ''}`.trim(),
+    cost: Number(raw?.price) || 0,
+    etd: raw?.estimated ? `${raw.estimated} Hari` : '',
+    courierCode: raw?.code || fallbackCourierCode,
+    courierName: raw?.name || fallbackCourierName
   };
 }
 
@@ -357,69 +382,102 @@ app.get('/api/cost', async (req, res) => {
   const apiKey = ensureApiKey(res);
   if (!apiKey) return;
 
-  const origin = (req.query.origin as string) || '';
-  const destination = (req.query.destination as string) || '';
-  const weight = parseInt((req.query.weight as string) || '1000', 10);
-  const originType = (req.query.originType as string) || 'city';
-  const destinationType = (req.query.destinationType as string) || 'city';
-  const couriersParam = (req.query.courier as string) || COST_COURIERS.map((c) => c.code).join(',');
+  const origin = ((req.query.origin as string) || '').trim();
+  const destination = ((req.query.destination as string) || '').trim();
+  // ✅ FIX: dokumentasi BinderByte minta weight dalam KILOGRAM.
+  // Frontend mengirim dalam GRAM untuk konsistensi UX (input field "Gram"),
+  // server konversi ke kilogram di sini (dibulatkan 2 desimal, min 0.1).
+  const weightGram = parseInt((req.query.weight as string) || '1000', 10);
+  const weightKg = Math.max(0.1, Math.round((weightGram / 1000) * 100) / 100);
+  const couriersParam =
+    (req.query.courier as string) || COST_COURIERS.map((c) => c.code).join(',');
 
   if (!origin || !destination) {
     return res.status(400).json({
       status: 400,
-      message: 'Parameter origin dan destination wajib diisi.'
+      code: 400,
+      message: 'origin, destination, weight, and courier parameters are required'
     });
   }
 
+  // Daftar kurir dicegah >12 (hanya 12 yang support per dokumentasi).
   const courierList = couriersParam
     .split(',')
     .map((c) => c.trim())
     .filter(Boolean)
-    .slice(0, 22);
+    .slice(0, 12);
 
-  async function fetchCost(courier: string) {
-    const params = new URLSearchParams({
-      api_key: apiKey,
-      courier,
-      origin,
-      destination,
-      weight: String(weight),
-      originType,
-      destinationType
+  // Build URL pakai query string (GET /v1/cost)
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    origin,
+    destination,
+    weight: String(weightKg),
+    courier: courierList.join(',')
+  });
+  // Optional: volume (PxLxT) bila dikirim dari frontend.
+  if (req.query.volume) {
+    params.set('volume', String(req.query.volume));
+  }
+  const url = `${BASE_URL}/cost?${params.toString()}`;
+
+  try {
+    const upstream = await fetch(url);
+    const payload = await upstream.json().catch(() => ({} as any));
+
+    // ✅ FIX: response code BinderByte sekarang STRING ("200"/"400"),
+    // bukan number. Handle keduanya supaya aman terhadap versi API.
+    const okCode =
+      payload?.code === '200' || payload?.code === 200 || payload?.status === 200;
+    if (!upstream.ok || !okCode) {
+      return res.status(upstream.status || 502).json({
+        status: payload?.code || upstream.status || 502,
+        code: payload?.code || upstream.status || 502,
+        message: payload?.message || 'Gagal mengambil data ongkir dari BinderByte',
+        raw: payload
+      });
+    }
+
+    // Normalisasi response BinderByte baru → shape CostServiceOption[]
+    const data = payload?.data || {};
+    const resultsArr: any[] = Array.isArray(data?.results) ? data.results : [];
+    const allResults: any[] = [];
+    for (const courierGroup of resultsArr) {
+      const courierCode = courierGroup?.code || '';
+      const courierName = courierGroup?.name || courierCode.toUpperCase();
+      const costsArr: any[] = Array.isArray(courierGroup?.costs) ? courierGroup.costs : [];
+      for (const costItem of costsArr) {
+        allResults.push(normalizeCostItem(costItem, courierCode, courierName));
+      }
+    }
+
+    if (allResults.length === 0) {
+      return res.status(200).json({
+        status: 200,
+        code: 200,
+        message: 'OK (tidak ada layanan ditemukan untuk rute ini)',
+        data: []
+      });
+    }
+
+    allResults.sort((a, b) => a.cost - b.cost);
+    return res.json({
+      status: 200,
+      code: 200,
+      message: payload?.message || 'Successfully calculated cost',
+      origin: data.origin,
+      destination: data.destination,
+      weight: data.weight,
+      data: allResults
     });
-    const url = `${BASE_URL}/cost?${params.toString()}`;
-    try {
-      const upstream = await fetch(url);
-      const json = await upstream.json();
-      if (!upstream.ok || json?.status !== 200) return null;
-      return { courier, payload: json };
-    } catch {
-      return null;
-    }
-  }
-
-  const responses = await Promise.all(courierList.map(fetchCost));
-  const allResults: any[] = [];
-  for (const r of responses) {
-    if (!r) continue;
-    const data = r.payload?.data;
-    const courierName = data?.courier?.name || r.courier.toUpperCase();
-    const arr = Array.isArray(data?.costs) ? data.costs : Array.isArray(data) ? data : [];
-    for (const item of arr) {
-      allResults.push(normalizeCostItem(item, r.courier, courierName));
-    }
-  }
-
-  if (allResults.length === 0) {
+  } catch (e: any) {
     return res.status(502).json({
       status: 502,
-      message:
-        'Tidak ada data ongkir yang dikembalikan BinderByte. Pastikan kode origin/destination valid dan subscription kamu mendukung kecamatan.'
+      code: 502,
+      message: `Upstream error: ${e?.message || 'unknown'}`,
+      error: 'UPSTREAM_UNREACHABLE'
     });
   }
-
-  allResults.sort((a, b) => a.cost - b.cost);
-  res.json({ status: 200, message: 'OK', data: allResults });
 });
 
 // Export `app` agar server.ts (dev only) bisa import tanpa menyebabkan

@@ -53,6 +53,11 @@ export interface BulkTrackItem {
   courier: string;
   courierName?: string;
   note?: string;
+  /**
+   * Nomor telepon penerima (untuk JNE sesuai dokumentasi BinderByte).
+   * Optional — hanya diperlukan untuk beberapa kurir yang memakai 4-parameter.
+   */
+  number?: string;
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: WaybillTrackingResult;
   errorMessage?: string;

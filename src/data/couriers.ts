@@ -219,8 +219,42 @@ export const COURIERS: CourierInfo[] = [
   }
 ];
 
-/** Kurir yang support cek ongkir (22 kurir sesuai dokumentasi). */
-export const COST_COURIERS = COURIERS.filter((c) => c.supportsCost);
+// Cek `supportsCost` di bawah ini hanya 12 kurir sesuai dokumentasi BinderByte
+// (perbaikan.txt): jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide,
+// jnt, wahana, spx. Kurir lain (indah, jet, rex, dll) TIDAK support endpoint
+// /v1/cost di BinderByte — mengirimkannya akan menyebabkan error.
+
+/**
+ * Daftar 12 kurir yang support Cek Ongkir sesuai dokumentasi BinderByte
+ * (perbaikan.txt). Field `shortName` mengikuti tabel dokumentasi:
+ *   jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide, jnt, wahana, spx
+ */
+export const COST_COURIER_CODES = [
+  'jne',
+  'pos',
+  'tiki',
+  'sicepat',
+  'anteraja',
+  'lion',
+  'ninja',
+  'sap',
+  'ide',
+  'jnt',
+  'wahana',
+  'spx'
+] as const;
+
+export type CostCourierCode = (typeof COST_COURIER_CODES)[number];
+
+/**
+ * Hanya kurir yang KONFIRM support /v1/cost dari dokumentasi BinderByte
+ * muncul di UI Cek Ongkir. (Versi sebelumnya melakukan `COURIERS.filter(c =>
+ * c.supportsCost)` dan menghasilkan 22 kurir, beberapa di antaranya tidak
+ * benar-benar support endpoint /v1/cost — siehe dokumentasi.)
+ */
+export const COST_COURIERS: CourierInfo[] = COURIERS.filter((c) =>
+  (COST_COURIER_CODES as readonly string[]).includes(c.code)
+);
 
 /**
  * Auto-detect courier code dari AWB string.

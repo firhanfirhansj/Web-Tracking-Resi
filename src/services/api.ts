@@ -1,7 +1,6 @@
 import { WaybillTrackingResult, CostServiceOption, BulkTrackItem, WaybillStatus } from '../types';
 
 const SAVED_WAYBILLS_KEY = 'binderbyte_saved_waybills';
-const SAVED_CITIES_CACHE_KEY = 'binderbyte_cities_cache_v1';
 
 // ----------------- Local history (LocalStorage) -----------------
 
@@ -46,13 +45,28 @@ export function clearAllSavedWaybills(): void {
 
 // ----------------- Single Track -----------------
 
-export async function trackWaybill(awb: string, courier: string): Promise<WaybillTrackingResult> {
+/**
+ * ✅ FIX Bug #3: parameter `number` (nomor telepon penerima) sesuai
+ * dokumentasi BinderByte untuk JNE: ...&courier=jne&awb=...&number=xxxxx
+ * Hanya diteruskan jika courier adalah JNE.
+ */
+export async function trackWaybill(
+  awb: string,
+  courier: string,
+  number?: string
+): Promise<WaybillTrackingResult> {
   const cleanAwb = awb.trim();
   if (!cleanAwb) throw new Error('Nomor resi tidak boleh kosong');
 
-  const response = await fetch(
-    `/api/track?awb=${encodeURIComponent(cleanAwb)}&courier=${encodeURIComponent(courier)}`
-  );
+  const params = new URLSearchParams({
+    awb: cleanAwb,
+    courier
+  });
+  if (courier.toLowerCase() === 'jne' && number && number.trim()) {
+    params.set('number', number.trim());
+  }
+
+  const response = await fetch(`/api/track?${params.toString()}`);
   const json = await response.json().catch(() => ({} as any));
 
   if (!response.ok || json?.status !== 200 || !json?.data) {
@@ -72,9 +86,12 @@ export async function trackWaybill(awb: string, courier: string): Promise<Waybil
 /**
  * Bulk tracking di sisi client: kirim seluruh array ke server.
  * Server akan loop paralel panggil /v1/track per item (max 50).
+ *
+ * ✅ FIX Bug #3: tiap item boleh berisi `number` (nomor telepon penerima)
+ * untuk kurir JNE — akan diteruskan ke BinderByte.
  */
 export async function trackWaybillsBulk(
-  items: { id: string; awb: string; courier: string; label?: string }[],
+  items: { id: string; awb: string; courier: string; label?: string; number?: string }[],
   onProgress?: (
     completed: number,
     total: number,
@@ -149,35 +166,36 @@ const DEFAULT_COST_COURIERS = [
   'ninja',
   'sap',
   'ide',
-  'j&t',
+  'jnt',
   'wahana',
   'spx'
 ];
 
+/**
+ * ✅ Dokumentasi BinderByte (perbaikan.txt): origin & destination adalah
+ * district ID dari /v1/locations (mis. "dist_36.72.08" atau "33.74.01.1001").
+ * Tidak ada lagi parameter "originType"/"destinationType" — tipe lokasi
+ * ditentukan oleh prefix id-nya sendiri.
+ *
+ * Weight dikirim dalam GRAM dari frontend (untuk UX konsistensi), lalu
+ * server proxy yang konversi ke KILOGRAM sesuai dokumentasi BinderByte.
+ */
 export async function calculateShippingCost(
   origin: string,
   destination: string,
   weightGrams: number,
-  couriers: string[] = DEFAULT_COST_COURIERS,
-  originType: 'city' | 'district' = 'city',
-  destinationType: 'city' | 'district' = 'city'
+  couriers: string[] = DEFAULT_COST_COURIERS
 ): Promise<CostServiceOption[]> {
   const params = new URLSearchParams({
     origin,
     destination,
     weight: String(weightGrams),
-    courier: couriers.join(','),
-    originType,
-    destinationType
+    courier: couriers.join(',')
   });
 
   const response = await fetch(`/api/cost?${params.toString()}`);
 
-  // ✅ FIX JSON error: Cek content-type sebelum parse JSON. Vercel / server bisa
-  // mengembalikan HTML error page (cth: "A server error occurred") ketika route
-  // tidak ter-handle atau upstream timeout. response.json() akan throw
-  // SyntaxError "Unexpected token 'A'" di kasus itu — kita tangkap dengan
-  // pesan yang lebih jelas.
+  // ✅ FIX JSON error: Cek content-type sebelum parse JSON.
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/json')) {
     const text = await response.text().catch(() => '');
@@ -189,21 +207,56 @@ export async function calculateShippingCost(
   }
 
   const json = await response.json().catch(() => ({} as any));
-
-  if (!response.ok) {
+  const okCode = json?.code === '200' || json?.code === 200 || json?.status === 200;
+  if (!response.ok || !okCode) {
     throw new Error(json?.message || `Gagal mengambil data ongkir (HTTP ${response.status})`);
   }
   if (Array.isArray(json.data)) return json.data;
   return [];
 }
 
-// ----------------- Locations (Province / City / District) -----------------
+// ----------------- Locations (sesuai dokumentasi BinderByte baru) -----------------
+// Dokumentasi BinderByte (perbaikan.txt) hanya menyediakan SATU endpoint:
+//   GET /v1/locations?search=<keyword>&api_key=<key>
+// Response: { code, message, data: [{ id, type, label }] }
+//
+// Tipe 'type' yang dikembalikan bisa berupa:
+//   - "province"   → id: "33"
+//   - "city"       → id: "33.74"
+//   - "district"   → id: "33.74.01"
+//   - "village"    → id: "33.74.01.1001"
+//
+// Untuk Cek Ongkir, dokumentasi contoh menggunakan id dengan prefix
+// "dist_36.72.08" / "village_36.72.08.1007". Frontend mengirim id mentah
+// (mis. "33.74.01.1001") dan server proxy akan otomatis prefix-kan
+// sesuai tipenya (lihat api/index.ts).
 
+export interface LocationResult {
+  id: string;
+  type: 'province' | 'city' | 'district' | 'village' | string;
+  label: string;
+}
+
+export async function fetchLocations(search: string): Promise<LocationResult[]> {
+  const q = search.trim();
+  if (q.length < 3) return [];
+  const res = await fetch(`/api/locations?search=${encodeURIComponent(q)}`);
+  const json = await res.json().catch(() => ({} as any));
+  // Response BinderByte: { code: "200", message, data: [...] }
+  const okCode = json?.code === '200' || json?.code === 200 || json?.status === 200;
+  if (!res.ok || !okCode || !Array.isArray(json?.data)) {
+    throw new Error(json?.message || 'Gagal mencari lokasi');
+  }
+  return json.data as LocationResult[];
+}
+
+// ----------------- Legacy aliases (kompatibilitas dengan kode lama) -----------------
+// Beberapa komponen lama mungkin masih import nama-nama ini. Kita export
+// stub yang melempar error informatif agar tidak silent-fail.
 export interface Province {
   province_id: string;
   province: string;
 }
-
 export interface City {
   city_id: string;
   province_id: string;
@@ -212,7 +265,6 @@ export interface City {
   city_name: string;
   postal_code: string;
 }
-
 export interface District {
   district_id: string;
   city_id: string;
@@ -224,58 +276,25 @@ export interface District {
   postal_code: string;
 }
 
+/** @deprecated Gunakan fetchLocations() — endpoint /v1/provinces sudah tidak ada di dokumentasi BinderByte. */
 export async function fetchProvinces(): Promise<Province[]> {
-  const res = await fetch('/api/provinces');
-  const json = await res.json();
-  if (!res.ok || !Array.isArray(json?.data)) {
-    throw new Error(json?.message || 'Gagal mengambil daftar provinsi');
-  }
-  return json.data;
+  throw new Error(
+    'fetchProvinces() sudah tidak dipakai. Gunakan fetchLocations(search) sesuai dokumentasi BinderByte baru.'
+  );
 }
 
-interface CitiesCache {
-  cachedAt: number;
-  data: City[];
-}
-const CITIES_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 jam
-
+/** @deprecated Gunakan fetchLocations() — endpoint /v1/cities sudah tidak dipakai. */
 export async function fetchCities(): Promise<City[]> {
-  // Cache di localStorage
-  try {
-    const raw = localStorage.getItem(SAVED_CITIES_CACHE_KEY);
-    if (raw) {
-      const cached = JSON.parse(raw) as CitiesCache;
-      if (Date.now() - cached.cachedAt < CITIES_CACHE_TTL_MS && Array.isArray(cached.data)) {
-        return cached.data;
-      }
-    }
-  } catch {
-    // Ignore
-  }
-
-  const res = await fetch('/api/cities');
-  const json = await res.json();
-  if (!res.ok || !Array.isArray(json?.data)) {
-    throw new Error(json?.message || 'Gagal mengambil daftar kota');
-  }
-  try {
-    localStorage.setItem(
-      SAVED_CITIES_CACHE_KEY,
-      JSON.stringify({ cachedAt: Date.now(), data: json.data } as CitiesCache)
-    );
-  } catch {
-    // Ignore quota
-  }
-  return json.data;
+  throw new Error(
+    'fetchCities() sudah tidak dipakai. Gunakan fetchLocations(search) sesuai dokumentasi BinderByte baru.'
+  );
 }
 
-export async function fetchDistricts(cityId: string): Promise<District[]> {
-  const res = await fetch(`/api/districts?city=${encodeURIComponent(cityId)}`);
-  const json = await res.json();
-  if (!res.ok || !Array.isArray(json?.data)) {
-    throw new Error(json?.message || 'Gagal mengambil daftar kecamatan');
-  }
-  return json.data;
+/** @deprecated Gunakan fetchLocations() — endpoint /v1/districts sudah tidak dipakai. */
+export async function fetchDistricts(_cityId: string): Promise<District[]> {
+  throw new Error(
+    'fetchDistricts() sudah tidak dipakai. Gunakan fetchLocations(search) sesuai dokumentasi BinderByte baru.'
+  );
 }
 
 // ----------------- CSV Export -----------------

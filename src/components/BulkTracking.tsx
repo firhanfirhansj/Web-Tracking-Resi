@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { COURIERS, detectCourierFromAwb } from '../data/couriers';
+import { COURIERS } from '../data/couriers';
 import { BulkTrackItem, WaybillStatus } from '../types';
 import { trackWaybillsBulk, exportBulkToCSV } from '../services/api';
 import { 
@@ -11,7 +11,9 @@ export const BulkTracking: React.FC = () => {
   const [inputText, setInputText] = useState<string>(
     'JNE1234567890\nJX1234567890\n001234567890\nP2607202612\n66001234567'
   );
-  const [selectedDefaultCourier, setSelectedDefaultCourier] = useState<string>('auto');
+  const [selectedDefaultCourier, setSelectedDefaultCourier] = useState<string>('jne');
+  // ✅ FIX Bug #3: nomor telepon penerima (untuk JNE sesuai dokumentasi BinderByte)
+  const [receiverNumber, setReceiverNumber] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [items, setItems] = useState<BulkTrackItem[]>([]);
@@ -21,6 +23,10 @@ export const BulkTracking: React.FC = () => {
   const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
 
   // Parse waybills from text input → BulkTrackItem[]
+  // ✅ FIX Bug #1: Hapus auto-detect kurir — gunakan kurir yang dipilih user
+  // untuk SEMUA nomor resi, sesuai permintaan di perbaikan.txt (auto-detect
+  // berpotensi salah deteksi untuk AWB dari kurir yang punya prefix ambigu,
+  // sehingga saldo BinderByte terpotong untuk request ke kurir yang salah).
   const parseWaybills = (text: string, courierCode: string): BulkTrackItem[] => {
     const lines: string[] = text
       .split(/[\n,;]+/)
@@ -30,17 +36,15 @@ export const BulkTracking: React.FC = () => {
     const uniqueLines = Array.from(new Set(lines)).slice(0, 50); // Cap at 50 resi
 
     return uniqueLines.map((awb, index) => {
-      let finalCourier = courierCode;
-      if (finalCourier === 'auto') {
-        finalCourier = detectCourierFromAwb(awb);
-      }
-      const courierObj = COURIERS.find((c) => c.code === finalCourier);
+      const courierObj = COURIERS.find((c) => c.code === courierCode);
 
       return {
         id: `bulk-${index}-${Date.now()}`,
         awb,
-        courier: finalCourier,
-        courierName: courierObj?.shortName || finalCourier.toUpperCase(),
+        courier: courierCode,
+        courierName: courierObj?.shortName || courierCode.toUpperCase(),
+        // ✅ FIX Bug #3: hanya disertakan untuk JNE (lihat dokumentasi BinderByte)
+        number: courierCode.toLowerCase() === 'jne' ? (receiverNumber.trim() || undefined) : undefined,
         status: 'pending'
       };
     });
@@ -55,7 +59,7 @@ export const BulkTracking: React.FC = () => {
 
     try {
       const results = await trackWaybillsBulk(
-        targetItems.map((i) => ({ id: i.id, awb: i.awb, courier: i.courier, label: i.note })),
+        targetItems.map((i) => ({ id: i.id, awb: i.awb, courier: i.courier, label: i.note, number: i.number })),
         (completed, total, latest) => {
           setProgress({ current: completed, total });
           if (latest) {
@@ -88,22 +92,23 @@ export const BulkTracking: React.FC = () => {
   };
 
   // Start Bulk Tracking — single entrypoint yang aman dari state closure
-  const handleStartTracking = async (overrideItems?: BulkTrackItem[]) => {
-    const targetItems = overrideItems || items;
-
-    if (targetItems.length === 0) {
-      const parsed = parseWaybills(inputText, selectedDefaultCourier);
-      if (parsed.length === 0) {
-        alert('Masukkan minimal 1 nomor resi yang valid.');
-        return;
-      }
-      // ✅ FIX Bug #1: set state DULU (sebelum run), baru panggil runBulkTracking
-      // dengan parsed yang sudah jadi. Tidak ada race / state closure.
-      setItems(parsed);
-      return runBulkTracking(parsed);
+  // ✅ FIX Bug #4 (UI tidak update Lion Parcel → J&T Cargo): SELALU parse ulang
+  // dari inputText dengan kurir yang sedang dipilih. Sebelumnya, jika `items`
+  // sudah ada (mis. hasil Lion Parcel), kode langsung re-run dengan items lama
+  // dan kurir tidak diganti → UI tetap menampilkan Lion Parcel, saldo
+  // BinderByte sudah terpotong untuk J&T Cargo. Sekarang user yang klik
+  // tombol "Proses Lacak Otomatis" selalu mendapat tracking sesuai kurir
+  // yang baru dipilih.
+  const handleStartTracking = async () => {
+    const parsed = parseWaybills(inputText, selectedDefaultCourier);
+    if (parsed.length === 0) {
+      alert('Masukkan minimal 1 nomor resi yang valid.');
+      return;
     }
-
-    runBulkTracking(targetItems);
+    // Set state DULU (sebelum run), baru panggil runBulkTracking dengan
+    // parsed yang sudah jadi. Tidak ada race / state closure.
+    setItems(parsed);
+    return runBulkTracking(parsed);
   };
 
   // File Upload Handler (CSV/Txt)
@@ -173,7 +178,7 @@ export const BulkTracking: React.FC = () => {
               Lacak 1 hingga 50 Resi Sekaligus
             </h2>
             <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-              Sistem tracking otomatis dengan pendeteksi kurir pintar. Cocok untuk penjual e-commerce, toko online, reseller, dan ekspedisi.
+              Sistem tracking otomatis. Pilih kurir yang sesuai, tempelkan daftar nomor resi, lalu proses sekaligus. Cocok untuk penjual e-commerce, toko online, reseller, dan ekspedisi.
             </p>
           </div>
 
@@ -218,20 +223,35 @@ export const BulkTracking: React.FC = () => {
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400 whitespace-nowrap">Default Kurir:</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-slate-400 whitespace-nowrap">Pilih Kurir:</span>
               <select
                 value={selectedDefaultCourier}
                 onChange={(e) => setSelectedDefaultCourier(e.target.value)}
                 className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500"
               >
-                <option value="auto">✨ Otomatis Deteksi Kurir</option>
                 {COURIERS.map((c) => (
                   <option key={c.code} value={c.code}>
                     {c.name}
                   </option>
                 ))}
               </select>
+
+              {/* ✅ FIX Bug #3: Input nomor telepon penerima — sesuai dokumentasi
+                  BinderByte untuk JNE (parameter "number"). Field ini HANYA
+                  tampil saat kurir = JNE. Untuk kurir lain disembunyikan agar
+                  UI tetap bersih. */}
+              {selectedDefaultCourier.toLowerCase() === 'jne' && (
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={receiverNumber}
+                  onChange={(e) => setReceiverNumber(e.target.value)}
+                  placeholder="No. HP Penerima (opsional, utk JNE)"
+                  className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500 w-56"
+                  title="Nomor telepon penerima — diperlukan BinderByte untuk beberapa resi JNE"
+                />
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -546,7 +566,7 @@ export const BulkTracking: React.FC = () => {
           </div>
           <h3 className="text-base font-semibold text-white">Panduan Penggunaan Bulk Tracking</h3>
           <p className="text-xs text-slate-400 max-w-xl mx-auto leading-relaxed">
-            Tempelkan hingga 50 nomor resi di dalam kotak di atas, pilih default kurir atau biarkan sistem mendeteksi secara otomatis. Klik tombol <strong className="text-blue-400">Proses Lacak Otomatis</strong> untuk memulai tracking bersamaan.
+            Pilih kurir yang sesuai, tempelkan hingga 50 nomor resi di dalam kotak di atas (1 resi per baris atau pisah dengan koma). Klik tombol <strong className="text-blue-400">Proses Lacak Otomatis</strong> untuk memulai tracking bersamaan.
           </p>
         </div>
       )}

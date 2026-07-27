@@ -21,6 +21,8 @@ import {
 export const SingleTracking: React.FC = () => {
   const [awb, setAwb] = useState<string>('');
   const [courier, setCourier] = useState<string>('jne');
+  // ✅ FIX Bug #3: nomor telepon penerima — untuk JNE sesuai dokumentasi BinderByte.
+  const [receiverNumber, setReceiverNumber] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [result, setResult] = useState<WaybillTrackingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export const SingleTracking: React.FC = () => {
     setResult(null);
 
     try {
-      const data = await trackWaybill(awb, courier);
+      const data = await trackWaybill(awb, courier, receiverNumber);
       setResult(data);
     } catch (err: any) {
       setError(err.message || 'Gagal melacak nomor resi');
@@ -135,6 +137,25 @@ export const SingleTracking: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* ✅ FIX Bug #3: Input nomor telepon penerima — hanya muncul
+              saat kurir=JNE sesuai dokumentasi BinderByte:
+              /v1/track?courier=jne&awb=...&number=xxxxx */}
+          {courier.toLowerCase() === 'jne' && (
+            <div className="pt-1">
+              <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">
+                Nomor Telepon Penerima (opsional — diperlukan BinderByte untuk JNE)
+              </label>
+              <input
+                type="tel"
+                inputMode="numeric"
+                value={receiverNumber}
+                onChange={(e) => setReceiverNumber(e.target.value)}
+                placeholder="Contoh: 081234567890"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs sm:text-sm font-mono text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          )}
         </form>
       </div>
 
