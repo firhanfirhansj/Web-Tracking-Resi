@@ -408,7 +408,13 @@ app.get('/api/cost', async (req, res) => {
 
 async function startServer() {
   const isVercel = Boolean(process.env.VERCEL) || Boolean(process.env.VERCEL_ENV);
-  if (isVercel) return;
+  if (isVercel) return; // Never listen() inside Vercel serverless runtime.
+
+  // Additional guard: don't run from the Vercel serverless entry path.
+  // `api/index.ts` imports this module — that import alone shouldn't
+  // attempt to open a port.
+  const entryUrl = process.argv[1] || '';
+  if (entryUrl.includes('/api/') || entryUrl.includes('/.vercel/')) return;
 
   const PORT = Number(process.env.PORT) || 3000;
 
