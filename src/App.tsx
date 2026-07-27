@@ -4,7 +4,7 @@ import { BulkTracking } from './components/BulkTracking';
 import { SingleTracking } from './components/SingleTracking';
 import { CostCalculator } from './components/CostCalculator';
 import { SavedHistory } from './components/SavedHistory';
-import { PackageSearch, ExternalLink, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { PackageSearch, ShieldCheck, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'bulk' | 'single' | 'cost' | 'history'>('bulk');
@@ -50,8 +50,8 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-white">
                   {apiKeyConfigured === false
-                    ? 'BinderByte API Key Belum Dikonfigurasi'
-                    : 'Terhubung dengan BinderByte API'}
+                    ? 'API Key Belum Dikonfigurasi'
+                    : 'Terhubung dengan API Tracking'}
                 </span>
                 {apiKeyConfigured !== false && (
                   <span className="px-2 py-0.2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-extrabold uppercase rounded-full">
@@ -82,19 +82,12 @@ export default function App() {
             <PackageSearch className="w-4 h-4 text-blue-400" />
             <span className="font-semibold text-slate-300">LacakResi Pro</span>
             <span>•</span>
-            <span>Terkoneksi BinderByte API</span>
+            <span>Whoto Logistik &amp; Distribusi</span>
           </div>
 
-          <div className="flex items-center gap-4 text-slate-400">
-            <a
-              href="https://documenter.getpostman.com/view/12963788/TVRg69g4"
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-white transition-colors flex items-center gap-1"
-            >
-              <span>Dokumentasi BinderByte</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+          <div className="flex items-center gap-2 text-slate-400">
+            <span>Dikembangkan oleh</span>
+            <span className="font-semibold text-slate-200">Firhan Saefa Jamil</span>
           </div>
         </div>
       </footer>

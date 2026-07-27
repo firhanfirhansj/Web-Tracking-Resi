@@ -25,7 +25,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                   LacakResi<span className="text-blue-400">Pro</span>
                 </h1>
                 <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-full">
-                  BinderByte API
+                  Whoto Logistik
                 </span>
               </div>
               <p className="text-xs text-slate-400">

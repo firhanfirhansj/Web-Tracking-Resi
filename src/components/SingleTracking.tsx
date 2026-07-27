@@ -139,12 +139,12 @@ export const SingleTracking: React.FC = () => {
           </div>
 
           {/* ✅ FIX Bug #3: Input nomor telepon penerima — hanya muncul
-              saat kurir=JNE sesuai dokumentasi BinderByte:
+              saat kurir=JNE (sesuai dokumentasi API tracking):
               /v1/track?courier=jne&awb=...&number=xxxxx */}
           {courier.toLowerCase() === 'jne' && (
             <div className="pt-1">
               <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">
-                Nomor Telepon Penerima (opsional — diperlukan BinderByte untuk JNE)
+                Nomor Telepon Penerima (opsional untuk JNE)
               </label>
               <input
                 type="tel"

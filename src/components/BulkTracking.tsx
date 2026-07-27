@@ -9,11 +9,9 @@ import {
 
 export const BulkTracking: React.FC = () => {
   const [inputText, setInputText] = useState<string>(
-    'JNE1234567890\nJX1234567890\n001234567890\nP2607202612\n66001234567'
+    '582230008329223 12345\n58223000832922312345\nJX1234567890\n001234567890\nP2607202612\n66001234567'
   );
   const [selectedDefaultCourier, setSelectedDefaultCourier] = useState<string>('jne');
-  // ✅ FIX Bug #3: nomor telepon penerima (untuk JNE sesuai dokumentasi BinderByte)
-  const [receiverNumber, setReceiverNumber] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [items, setItems] = useState<BulkTrackItem[]>([]);
@@ -22,11 +20,56 @@ export const BulkTracking: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
 
+  // Parse single input line → { awb, number? }
+  // ✅ Untuk JNE, user bisa menggabungkan nomor telepon penerima ke AWB:
+  //   - Dengan spasi:  "582230008329223 12345"  → awb=AWB, number=5-digit-HP
+  //   - Tanpa spasi:   "58223000832922312345"   → 5 digit terakhir dianggap HP
+  // AWB JNE umumnya 15 digit, sehingga jika panjang > 15 digit untuk JNE,
+  // 5 digit terakhir otomatis dianggap nomor HP.
+  // Untuk kurir lain, input diperlakukan seluruhnya sebagai AWB.
+  const parseLine = (
+    rawLine: string,
+    courierCode: string
+  ): { awb: string; number?: string } => {
+    const line = rawLine.trim();
+    if (!line) return { awb: '' };
+
+    if (courierCode.toLowerCase() === 'jne') {
+      // 1. Jika ada whitespace, segmen terakhir (yang purely digits) adalah nomor HP
+      const parts = line.split(/\s+/).filter(Boolean);
+      if (parts.length >= 2) {
+        const last = parts[parts.length - 1];
+        if (/^\d{3,}$/.test(last) && last.length <= 15) {
+          const awbCombined = parts.slice(0, -1).join(' ');
+          return { awb: awbCombined, number: last };
+        }
+      }
+      // 2. Tanpa spasi: kalau digit全部 dan panjang > 15, 5 digit terakhir adalah HP
+      const digitsOnly = line.replace(/\D/g, '');
+      if (digitsOnly.length > 15 && /^\d+$/.test(line)) {
+        return {
+          awb: digitsOnly.slice(0, digitsOnly.length - 5),
+          number: digitsOnly.slice(-5)
+        };
+      }
+      // 3. Tetap hormati prefix non-digit (mis. "JNE123...")
+      if (digitsOnly.length > 15) {
+        return {
+          awb: line.slice(0, line.length - 5),
+          number: line.slice(-5)
+        };
+      }
+      return { awb: line };
+    }
+
+    return { awb: line };
+  };
+
   // Parse waybills from text input → BulkTrackItem[]
   // ✅ FIX Bug #1: Hapus auto-detect kurir — gunakan kurir yang dipilih user
-  // untuk SEMUA nomor resi, sesuai permintaan di perbaikan.txt (auto-detect
-  // berpotensi salah deteksi untuk AWB dari kurir yang punya prefix ambigu,
-  // sehingga saldo BinderByte terpotong untuk request ke kurir yang salah).
+  // untuk SEMUA nomor resi (auto-detect berpotensi salah deteksi untuk AWB
+  // dari kurir yang punya prefix ambigu, sehingga saldo terpotong untuk
+  // request ke kurir yang salah).
   const parseWaybills = (text: string, courierCode: string): BulkTrackItem[] => {
     const lines: string[] = text
       .split(/[\n,;]+/)
@@ -35,16 +78,16 @@ export const BulkTracking: React.FC = () => {
 
     const uniqueLines = Array.from(new Set(lines)).slice(0, 50); // Cap at 50 resi
 
-    return uniqueLines.map((awb, index) => {
+    return uniqueLines.map((rawLine, index) => {
+      const { awb, number } = parseLine(rawLine, courierCode);
       const courierObj = COURIERS.find((c) => c.code === courierCode);
 
       return {
         id: `bulk-${index}-${Date.now()}`,
         awb,
+        number,
         courier: courierCode,
         courierName: courierObj?.shortName || courierCode.toUpperCase(),
-        // ✅ FIX Bug #3: hanya disertakan untuk JNE (lihat dokumentasi BinderByte)
-        number: courierCode.toLowerCase() === 'jne' ? (receiverNumber.trim() || undefined) : undefined,
         status: 'pending'
       };
     });
@@ -236,23 +279,16 @@ export const BulkTracking: React.FC = () => {
                   </option>
                 ))}
               </select>
-
-              {/* ✅ FIX Bug #3: Input nomor telepon penerima — sesuai dokumentasi
-                  BinderByte untuk JNE (parameter "number"). Field ini HANYA
-                  tampil saat kurir = JNE. Untuk kurir lain disembunyikan agar
-                  UI tetap bersih. */}
-              {selectedDefaultCourier.toLowerCase() === 'jne' && (
-                <input
-                  type="tel"
-                  inputMode="numeric"
-                  value={receiverNumber}
-                  onChange={(e) => setReceiverNumber(e.target.value)}
-                  placeholder="No. HP Penerima (opsional, utk JNE)"
-                  className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500 w-56"
-                  title="Nomor telepon penerima — diperlukan BinderByte untuk beberapa resi JNE"
-                />
-              )}
             </div>
+
+            {/* Catatan kecil untuk JNE: cara gabung nomor telepon ke AWB */}
+            {selectedDefaultCourier.toLowerCase() === 'jne' && (
+              <p className="text-[10px] text-slate-500 leading-snug">
+                Tips JNE: untuk resi yang butuh no HP penerima, gabungkan 5 digit terakhir HP
+                ke AWB (mis. <span className="font-mono text-slate-400">58223000832922312345</span>{' '}
+                atau <span className="font-mono text-slate-400">582230008329223 12345</span>).
+              </p>
+            )}
 
             <div className="flex items-center gap-2">
               {items.length > 0 && (
@@ -475,6 +511,13 @@ export const BulkTracking: React.FC = () => {
                           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[11px] font-semibold">
                             {courierObj?.name || item.courier.toUpperCase()}
                           </span>
+                          {/* Tampilkan 5 digit terakhir no HP jika ada (untuk JNE) */}
+                          {item.number && (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[11px] font-mono"
+                                  title={`5 digit terakhir no HP penerima: ${item.number}`}>
+                              HP: …{item.number}
+                            </span>
+                          )}
                         </div>
 
                         {res?.summary && (
@@ -567,6 +610,12 @@ export const BulkTracking: React.FC = () => {
           <h3 className="text-base font-semibold text-white">Panduan Penggunaan Bulk Tracking</h3>
           <p className="text-xs text-slate-400 max-w-xl mx-auto leading-relaxed">
             Pilih kurir yang sesuai, tempelkan hingga 50 nomor resi di dalam kotak di atas (1 resi per baris atau pisah dengan koma). Klik tombol <strong className="text-blue-400">Proses Lacak Otomatis</strong> untuk memulai tracking bersamaan.
+            <br />
+            <span className="text-slate-500">
+              Untuk JNE yang butuh no HP penerima, gabungkan 5 digit terakhir HP ke AWB (mis.
+              <span className="font-mono"> 58223000832922312345 </span> atau
+              <span className="font-mono"> 582230008329223 12345</span>).
+            </span>
           </p>
         </div>
       )}
