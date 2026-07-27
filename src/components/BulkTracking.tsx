@@ -20,62 +20,56 @@ export const BulkTracking: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
 
-  // Parse waybills from text input
-  const handleParseWaybills = () => {
-    const lines: string[] = inputText
+  // Parse waybills from text input → BulkTrackItem[]
+  const parseWaybills = (text: string, courierCode: string): BulkTrackItem[] => {
+    const lines: string[] = text
       .split(/[\n,;]+/)
       .map((l) => (typeof l === 'string' ? l.trim() : ''))
       .filter((l) => l.length >= 3);
 
     const uniqueLines = Array.from(new Set(lines)).slice(0, 50); // Cap at 50 resi
 
-    if (uniqueLines.length === 0) {
-      alert('Masukkan minimal 1 nomor resi yang valid.');
-      return;
-    }
-
-    const newItems: BulkTrackItem[] = uniqueLines.map((awb, index) => {
-      let courierCode = selectedDefaultCourier;
-      if (courierCode === 'auto') {
-        courierCode = detectCourierFromAwb(awb);
+    return uniqueLines.map((awb, index) => {
+      let finalCourier = courierCode;
+      if (finalCourier === 'auto') {
+        finalCourier = detectCourierFromAwb(awb);
       }
-      const courierObj = COURIERS.find((c) => c.code === courierCode);
+      const courierObj = COURIERS.find((c) => c.code === finalCourier);
 
       return {
         id: `bulk-${index}-${Date.now()}`,
         awb,
-        courier: courierCode,
-        courierName: courierObj?.shortName || courierCode.toUpperCase(),
+        courier: finalCourier,
+        courierName: courierObj?.shortName || finalCourier.toUpperCase(),
         status: 'pending'
       };
     });
-
-    setItems(newItems);
   };
 
-  // Start Bulk Tracking
-  const handleStartTracking = async () => {
-    if (items.length === 0) {
-      handleParseWaybills();
-      return;
-    }
+  // Run the bulk tracking API against a specific list of items
+  const runBulkTracking = async (targetItems: BulkTrackItem[]) => {
+    if (targetItems.length === 0) return;
 
     setIsProcessing(true);
-    setProgress({ current: 0, total: items.length });
+    setProgress({ current: 0, total: targetItems.length });
 
     try {
       const results = await trackWaybillsBulk(
-        items.map((i) => ({ id: i.id, awb: i.awb, courier: i.courier, label: i.note })),
+        targetItems.map((i) => ({ id: i.id, awb: i.awb, courier: i.courier, label: i.note })),
         (completed, total, latest) => {
           setProgress({ current: completed, total });
           if (latest) {
+            // ✅ FIX Bug #2: gunakan latest.status dari server (bisa 'success' / 'error'),
+            // bukan hardcode 'success'. Sertakan errorMessage agar UI menampilkan
+            // pesan error dengan benar saat tracking gagal.
             setItems((prev) =>
               prev.map((item) => {
                 if (item.id === latest.id) {
                   return {
                     ...item,
-                    status: 'success',
-                    result: latest.result
+                    status: latest.status,
+                    result: latest.result,
+                    errorMessage: latest.errorMessage
                   };
                 }
                 return item;
@@ -91,6 +85,25 @@ export const BulkTracking: React.FC = () => {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  // Start Bulk Tracking — single entrypoint yang aman dari state closure
+  const handleStartTracking = async (overrideItems?: BulkTrackItem[]) => {
+    const targetItems = overrideItems || items;
+
+    if (targetItems.length === 0) {
+      const parsed = parseWaybills(inputText, selectedDefaultCourier);
+      if (parsed.length === 0) {
+        alert('Masukkan minimal 1 nomor resi yang valid.');
+        return;
+      }
+      // ✅ FIX Bug #1: set state DULU (sebelum run), baru panggil runBulkTracking
+      // dengan parsed yang sudah jadi. Tidak ada race / state closure.
+      setItems(parsed);
+      return runBulkTracking(parsed);
+    }
+
+    runBulkTracking(targetItems);
   };
 
   // File Upload Handler (CSV/Txt)
@@ -236,10 +249,7 @@ export const BulkTracking: React.FC = () => {
               )}
 
               <button
-                onClick={() => {
-                  handleParseWaybills();
-                  setTimeout(() => handleStartTracking(), 100);
-                }}
+                onClick={() => handleStartTracking()}
                 disabled={isProcessing || !inputText.trim()}
                 className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all shadow-lg ${
                   isProcessing

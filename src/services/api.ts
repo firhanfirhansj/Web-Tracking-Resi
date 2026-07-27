@@ -172,6 +172,22 @@ export async function calculateShippingCost(
   });
 
   const response = await fetch(`/api/cost?${params.toString()}`);
+
+  // ✅ FIX JSON error: Cek content-type sebelum parse JSON. Vercel / server bisa
+  // mengembalikan HTML error page (cth: "A server error occurred") ketika route
+  // tidak ter-handle atau upstream timeout. response.json() akan throw
+  // SyntaxError "Unexpected token 'A'" di kasus itu — kita tangkap dengan
+  // pesan yang lebih jelas.
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    const text = await response.text().catch(() => '');
+    throw new Error(
+      `Respons server bukan JSON (HTTP ${response.status}). ` +
+        `Pastikan BINDERBYTE_API_KEY sudah di-set dan server berjalan. ` +
+        `Potongan respons: ${text.slice(0, 80) || '(kosong)'}`
+    );
+  }
+
   const json = await response.json().catch(() => ({} as any));
 
   if (!response.ok) {

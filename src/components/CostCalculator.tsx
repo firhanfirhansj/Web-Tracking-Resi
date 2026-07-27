@@ -92,17 +92,36 @@ export const CostCalculator: React.FC = () => {
     [cities, destinationProvince]
   );
 
-  // Search filter by city name
+  // Search filter by city name — selalu sertakan kota yang sedang terpilih
+  // (originCity / destinationCity) meskipun tidak cocok dengan query, supaya
+  // <select> tidak di-reset ke kosong oleh browser ketika user mengetik.
   const visibleOriginCities = useMemo(() => {
     const q = citySearch.origin.trim().toLowerCase();
-    if (!q) return filteredOriginCities.slice(0, 200);
-    return filteredOriginCities.filter((c) => c.city_name.toLowerCase().includes(q)).slice(0, 200);
-  }, [filteredOriginCities, citySearch.origin]);
+    const base = q
+      ? filteredOriginCities.filter((c) => c.city_name.toLowerCase().includes(q))
+      : filteredOriginCities;
+    const selected = originCity
+      ? filteredOriginCities.find((c) => c.city_id === originCity)
+      : undefined;
+    if (selected && !base.some((c) => c.city_id === selected.city_id)) {
+      return [selected, ...base].slice(0, 200);
+    }
+    return base.slice(0, 200);
+  }, [filteredOriginCities, citySearch.origin, originCity]);
+
   const visibleDestinationCities = useMemo(() => {
     const q = citySearch.destination.trim().toLowerCase();
-    if (!q) return filteredDestinationCities.slice(0, 200);
-    return filteredDestinationCities.filter((c) => c.city_name.toLowerCase().includes(q)).slice(0, 200);
-  }, [filteredDestinationCities, citySearch.destination]);
+    const base = q
+      ? filteredDestinationCities.filter((c) => c.city_name.toLowerCase().includes(q))
+      : filteredDestinationCities;
+    const selected = destinationCity
+      ? filteredDestinationCities.find((c) => c.city_id === destinationCity)
+      : undefined;
+    if (selected && !base.some((c) => c.city_id === selected.city_id)) {
+      return [selected, ...base].slice(0, 200);
+    }
+    return base.slice(0, 200);
+  }, [filteredDestinationCities, citySearch.destination, destinationCity]);
 
   // Load districts when city changes
   useEffect(() => {
@@ -194,12 +213,18 @@ export const CostCalculator: React.FC = () => {
     }
   };
 
+  // ✅ FIX Bug #3: Ambil kelompok angka PERTAMA saja dari string ETD.
+  // Sebelumnya `replace(/\D/g, '')` menggabungkan semua digit (mis. "1-2 Hari" → "12"
+  // bukan "1"), sehingga pengurutan "Tercepat" menjadi salah.
+  const extractEtdDays = (etdStr: string): number => {
+    const match = etdStr.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 99;
+  };
+
   const sortedResults = [...results].sort((a, b) => {
     if (sortBy === 'price') return a.cost - b.cost;
     if (sortBy === 'etd') {
-      const etdA = parseInt(a.etd.replace(/\D/g, '') || '99', 10);
-      const etdB = parseInt(b.etd.replace(/\D/g, '') || '99', 10);
-      return etdA - etdB;
+      return extractEtdDays(a.etd) - extractEtdDays(b.etd);
     }
     return a.courierName.localeCompare(b.courierName);
   });
@@ -263,6 +288,19 @@ export const CostCalculator: React.FC = () => {
                 ))}
               </select>
 
+              {/* ✅ FIX UX #4: kolom pencarian dipindahkan ke ATAS select kota
+                  agar alur input lebih natural bagi pengguna (ketik → pilih). */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={citySearch.origin}
+                  onChange={(e) => setCitySearch({ ...citySearch, origin: e.target.value })}
+                  placeholder="Cari kota/kabupaten..."
+                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
               <div className="relative">
                 <Building2 className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <select
@@ -281,17 +319,6 @@ export const CostCalculator: React.FC = () => {
                     </option>
                   ))}
                 </select>
-              </div>
-
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={citySearch.origin}
-                  onChange={(e) => setCitySearch({ ...citySearch, origin: e.target.value })}
-                  placeholder="Cari kota..."
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
-                />
               </div>
 
               {originDistricts.length > 0 && (
@@ -348,6 +375,18 @@ export const CostCalculator: React.FC = () => {
                 ))}
               </select>
 
+              {/* ✅ FIX UX #4: kolom pencarian dipindahkan ke ATAS select kota. */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={citySearch.destination}
+                  onChange={(e) => setCitySearch({ ...citySearch, destination: e.target.value })}
+                  placeholder="Cari kota/kabupaten..."
+                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
               <div className="relative">
                 <Building2 className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <select
@@ -366,17 +405,6 @@ export const CostCalculator: React.FC = () => {
                     </option>
                   ))}
                 </select>
-              </div>
-
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={citySearch.destination}
-                  onChange={(e) => setCitySearch({ ...citySearch, destination: e.target.value })}
-                  placeholder="Cari kota..."
-                  className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500"
-                />
               </div>
 
               {destinationDistricts.length > 0 && (
