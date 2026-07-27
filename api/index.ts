@@ -1,4 +1,4 @@
-import { app } from '../server';
+import app from '../server.js';
 
 // Vercel serverless entry — exports the Express app directly.
 // `server.ts` imports this module's path sibling, but does NOT call listen()
