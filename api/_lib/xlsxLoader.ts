@@ -5,9 +5,10 @@
 // /api/cost (pricelist kargo) agar file XLSX hanya di-parse SEKALI per
 // cold-start Vercel serverless function, bukan per-request.
 //
-// File XLSX yang di-bundle: diletakkan di root project, Vercel @vercel/node
-// resolver ikut men-copy ke runtime, sehingga path relatif dari process.cwd()
-// aman.
+// DEPLOYMENT VERKEL: file XLSX di-root TIDAK otomatis ter-copy ke runtime
+// `/var/task/`. Kita harus secara eksplisit mendaftarkannya via
+// `vercel.json` → builds[].config.includeFiles (lihat vercel.json).
+// Path relatif dari process.cwd() aman karena Vercel set cwd=/var/task.
 // =====================================================================
 
 import * as XLSX from 'xlsx';
@@ -33,15 +34,18 @@ function loadAll(): Map<string, any[][]> {
   for (const [key, file] of files) {
     try {
       // Resolusi path: di Vercel runtime, /var/task adalah cwd untuk
-      // serverless function. File XLSX di-copy ke /var/task/ oleh Vercel.
+      // serverless function. File XLSX di-bundle via `vercel.json`
+      // includeFiles sehingga ikut ter-copy ke /var/task/.
       const filePath = path.join(process.cwd(), file);
       const wb = XLSXLib.readFile(filePath, { cellDates: false });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const aoa = XLSXLib.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
       map.set(key, aoa as any[][]);
+      // eslint-disable-next-line no-console
+      console.log(`[xlsxLoader] Loaded ${file} (${aoa.length} rows)`);
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error(`[xlsxLoader] Gagal load ${file}:`, (e as any)?.message);
+      console.error(`[xlsxLoader] Gagal load ${file} dari ${process.cwd()}:`, (e as any)?.message);
     }
   }
   cache = map;

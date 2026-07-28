@@ -4,7 +4,16 @@
   "builds": [
     {
       "src": "api/index.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "Onkgir J&T Cargo.xlsx",
+          "ongkir CMC.xlsx",
+          "ongkir HERONA.xlsx",
+          "ongkir MEX Darat.xlsx",
+          "ongkir MEX Udara.xlsx"
+        ]
+      }
     },
     {
       "src": "package.json",
