@@ -28,7 +28,7 @@ import {
 
 /**
  * ✅ Fitur Ekspor Data Resi dengan AI (perbaikan.txt #1).
- * User upload 1–50 gambar resi → AI (Ollama `minimax-m3:cloud`) extract
+ * User upload 1–50 gambar resi → AI (Ollama `llama3.2-vision`) extract
  * field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
  */
 export const ResiExport: React.FC = () => {
@@ -182,11 +182,10 @@ export const ResiExport: React.FC = () => {
                 </div>
               ) : (
                 <div>
-                  <strong>AI belum terhubung.</strong> Set env var{' '}
-                  <code className="px-1 py-0.5 bg-slate-800 rounded text-[11px]">
-                    OLLAMA_API_KEY
-                  </code>{' '}
-                  di Vercel / <code className="px-1 py-0.5 bg-slate-800 rounded text-[11px]">.env.local</code>.
+                  <strong>AI belum terhubung.</strong>{' '}
+                  {aiHealth.apiKeyPresent
+                    ? 'Ollama server tidak bisa dihubungi — periksa OLLAMA_BASE_URL atau koneksi internet.'
+                    : 'Isi OLLAMA_API_KEY di file .env (lokal) atau Vercel Environment Variables (production) untuk mengaktifkan fitur AI Ekstrak Resi.'}{' '}
                   Detail: {aiHealth.error || 'unreachable'}
                 </div>
               )}
