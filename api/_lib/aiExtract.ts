@@ -64,7 +64,13 @@ function getOllamaConfig() {
   // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com
   // (sebelumnya tertulis https://api.ollama.com — domain itu tidak valid
   // untuk Ollama Cloud, menyebabkan "unreachable" di Perbaikan.txt).
-  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, '');
+  // Auto-strip trailing slash dan suffix "/api" supaya env var
+  // "https://ollama.com/api" (format umum) tetap bekerja.
+  const rawBase = process.env.OLLAMA_BASE_URL || 'https://ollama.com';
+  const baseUrl = rawBase
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/, '');
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
   // ✅ FIX: default model vision Ollama yang valid. Sebelumnya
   // "minimax-m3:cloud" adalah nama internal provider AI Claude Code, bukan

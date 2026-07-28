@@ -625,7 +625,12 @@ app.post('/api/ai/extract-resi', (req, res) => {
 app.get('/api/ai/health', async (_req, res) => {
   // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com.
   // Sebelumnya default https://api.ollama.com selalu gagal → "unreachable".
-  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, '');
+  // Auto-strip trailing slash dan suffix "/api" supaya kedua format bekerja.
+  const rawBase = process.env.OLLAMA_BASE_URL || 'https://ollama.com';
+  const baseUrl = rawBase
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/, '');
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
   // Abaikan placeholder di health check juga (lihat isPlaceholder di atas).
   // ✅ FIX: default model vision Ollama yang valid.
