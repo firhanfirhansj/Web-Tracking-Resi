@@ -40,9 +40,28 @@ function getApiKey(): string {
   return (process.env.BINDERBYTE_API_KEY || '').trim();
 }
 
+/**
+ * ✅ FIX Bug #4: Deteksi placeholder string yang belum diganti user.
+ * Sebelumnya .env.local berisi "BINDERBYTE_API_KEY=your_binderbyte_api_key_here"
+ * — string ini truthy, jadi ensureApiKey() selalu meloloskan, lalu BinderByte
+ * mengembalikan 401 dan user melihat pesan membingungkan. Sekarang placeholder
+ * otomatis dianggap kosong.
+ */
+function isPlaceholder(value: string): boolean {
+  if (!value) return true;
+  const v = value.toLowerCase();
+  return (
+    v === 'your_binderbyte_api_key_here' ||
+    v === 'your_ollama_cloud_api_key_here' ||
+    v.startsWith('your_') ||
+    v.startsWith('replace_') ||
+    v.startsWith('change_me')
+  );
+}
+
 function ensureApiKey(res: express.Response): string | null {
   const key = getApiKey();
-  if (!key) {
+  if (!key || isPlaceholder(key)) {
     res.status(503).json({
       status: 503,
       message:
@@ -604,9 +623,13 @@ app.post('/api/ai/extract-resi', (req, res) => {
 
 // --- AI Health check (cek apakah Ollama reachable) ---
 app.get('/api/ai/health', async (_req, res) => {
-  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://api.ollama.com').replace(/\/$/, '');
+  // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com.
+  // Sebelumnya default https://api.ollama.com selalu gagal → "unreachable".
+  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, '');
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
-  const model = (process.env.OLLAMA_MODEL || 'minimax-m3:cloud').trim();
+  // Abaikan placeholder di health check juga (lihat isPlaceholder di atas).
+  // ✅ FIX: default model vision Ollama yang valid.
+  const model = (process.env.OLLAMA_MODEL || 'llama3.2-vision').trim();
   try {
     // Coba panggil /api/tags untuk cek apakah server hidup
     const headers: Record<string, string> = {};

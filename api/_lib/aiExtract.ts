@@ -10,9 +10,9 @@
 //      model tidak support vision, return error informatif)
 //
 // Mendukung env var:
-//   - OLLAMA_BASE_URL   (default: https://api.ollama.com)
+//   - OLLAMA_BASE_URL   (default: https://ollama.com)
 //   - OLLAMA_API_KEY    (default: '')
-//   - OLLAMA_MODEL      (default: minimax-m3:cloud)
+//   - OLLAMA_MODEL      (default: llama3.2-vision)
 // =====================================================================
 
 export interface ExtractedResi {
@@ -61,9 +61,15 @@ Aturan:
 const USER_PROMPT = `Ekstrak data dari gambar resi ini dan output JSON valid saja.`;
 
 function getOllamaConfig() {
-  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://api.ollama.com').replace(/\/$/, '');
+  // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com
+  // (sebelumnya tertulis https://api.ollama.com — domain itu tidak valid
+  // untuk Ollama Cloud, menyebabkan "unreachable" di Perbaikan.txt).
+  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://ollama.com').replace(/\/$/, '');
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
-  const model = (process.env.OLLAMA_MODEL || 'minimax-m3:cloud').trim();
+  // ✅ FIX: default model vision Ollama yang valid. Sebelumnya
+  // "minimax-m3:cloud" adalah nama internal provider AI Claude Code, bukan
+  // model Ollama — jelas tidak akan ditemukan di registry Ollama Cloud.
+  const model = (process.env.OLLAMA_MODEL || 'llama3.2-vision').trim();
   return { baseUrl, apiKey, model };
 }
 
