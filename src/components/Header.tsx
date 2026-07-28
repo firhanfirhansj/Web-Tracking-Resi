@@ -1,9 +1,9 @@
 import React from 'react';
-import { PackageSearch, Calculator, History, Layers } from 'lucide-react';
+import { PackageSearch, Calculator, History, Layers, ScanLine } from 'lucide-react';
 
 interface HeaderProps {
-  activeTab: 'bulk' | 'single' | 'cost' | 'history';
-  setActiveTab: (tab: 'bulk' | 'single' | 'cost' | 'history') => void;
+  activeTab: 'bulk' | 'single' | 'cost' | 'history' | 'export';
+  setActiveTab: (tab: 'bulk' | 'single' | 'cost' | 'history' | 'export') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
@@ -83,6 +83,21 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             >
               <History className="w-4 h-4" />
               <span>Riwayat</span>
+            </button>
+
+            {/* ✅ Perbaikan.txt #1: Tab "Ekspor Data Resi" — upload foto resi 1-50,
+                AI (Ollama minimax-m3:cloud) ekstrak data, bisa salin/download CSV/Excel. */}
+            <button
+              onClick={() => setActiveTab('export')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
+                activeTab === 'export'
+                  ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30 font-semibold'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <ScanLine className="w-4 h-4" />
+              <span>Ekspor Data Resi</span>
+              <span className="ml-0.5 px-1.5 py-0.2 bg-purple-400/20 text-purple-300 rounded text-[10px] font-bold">AI</span>
             </button>
           </nav>
         </div>

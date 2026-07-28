@@ -4,10 +4,12 @@ import { BulkTracking } from './components/BulkTracking';
 import { SingleTracking } from './components/SingleTracking';
 import { CostCalculator } from './components/CostCalculator';
 import { SavedHistory } from './components/SavedHistory';
+import { ResiExport } from './components/ResiExport';
 import { PackageSearch, ShieldCheck, AlertTriangle } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'bulk' | 'single' | 'cost' | 'history'>('bulk');
+  // ✅ Perbaikan.txt #1: tambah tab 'export' untuk fitur AI Ekstrak Resi.
+  const [activeTab, setActiveTab] = useState<'bulk' | 'single' | 'cost' | 'history' | 'export'>('bulk');
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -73,6 +75,7 @@ export default function App() {
         {activeTab === 'single' && <SingleTracking />}
         {activeTab === 'cost' && <CostCalculator />}
         {activeTab === 'history' && <SavedHistory />}
+        {activeTab === 'export' && <ResiExport />}
       </main>
 
       {/* Footer */}

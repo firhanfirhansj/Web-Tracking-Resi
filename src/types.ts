@@ -1,3 +1,29 @@
+export type CostSource = 'binderbyte' | 'pricelist';
+
+export interface ExtractedResi {
+  filename: string;
+  ok: boolean;
+  data?: {
+    pengirim: string | null;
+    penerima: string | null;
+    tanggalKirim: string | null;
+    noResi: string | null;
+    alamat: string | null;
+    harga: number | null;
+    loadKg: number | null;
+    jumlahBarang: number | null;
+    ekspedisi: string | null;
+    asuransi: number | null;
+  };
+  raw?: string;
+  error?: string;
+}
+
+export interface PricelistCity {
+  origin: string[];
+  destination: string[];
+}
+
 export type WaybillStatus =
   | 'DELIVERED'
   | 'IN_TRANSIT'
@@ -71,6 +97,7 @@ export interface CostServiceOption {
   etd: string;
   courierCode: string;
   courierName: string;
+  source?: CostSource;
 }
 
 export interface CourierInfo {
@@ -81,6 +108,7 @@ export interface CourierInfo {
   sampleAwb?: string;
   prefixes?: string[];
   supportsCost?: boolean;
+  source?: CostSource;
 }
 
 export interface LocationItem {

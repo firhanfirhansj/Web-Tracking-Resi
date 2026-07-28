@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
+import Busboy from 'busboy';
+import { computeCargoCost } from './_lib/pricelist';
+import { getUniqueCities } from './_lib/xlsxLoader';
+import { extractResiBatch } from './_lib/aiExtract';
 
 // =====================================================================
 // LacakResi Pro — Vercel Serverless Entry
@@ -124,23 +128,29 @@ const TRACK_COURIERS = [
   { code: 'rekomendasi', description: 'Kurir Rekomendasi BinderByte' }
 ];
 
-// ✅ Dokumentasi BinderByte (perbaikan.txt): Cek Ongkir hanya support 12 kurir:
+// ✅ Dokumentasi BinderByte (perbaikan.txt): Cek Ongkir BinderByte hanya support 12 kurir.
 //   jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide, jnt, wahana, spx
-// Sebelumnya kita kirim 22 kurir (termasuk rex, indah, jet, dll yang ternyata
-// tidak support endpoint /v1/cost BinderByte).
+// Kita tambahkan 5 kurir kargo dari pricelist lokal sebagai SUPPLEMENT
+// (bukan via BinderByte). Field `source` membedakan keduanya.
 const COST_COURIERS = [
-  { code: 'jne',      description: 'JNE Express' },
-  { code: 'pos',      description: 'POS Indonesia' },
-  { code: 'tiki',     description: 'TIKI' },
-  { code: 'sicepat',  description: 'SiCepat Ekspres' },
-  { code: 'anteraja', description: 'AnterAja' },
-  { code: 'lion',     description: 'Lion Parcel' },
-  { code: 'ninja',    description: 'Ninja Xpress' },
-  { code: 'sap',      description: 'SAP Express' },
-  { code: 'ide',      description: 'ID Express' },
-  { code: 'jnt',      description: 'J&T Express Indonesia' },
-  { code: 'wahana',   description: 'Wahana Express' },
-  { code: 'spx',      description: 'Shopee Express' }
+  { code: 'jne',        description: 'JNE Express',           source: 'binderbyte' },
+  { code: 'pos',        description: 'POS Indonesia',         source: 'binderbyte' },
+  { code: 'tiki',       description: 'TIKI',                  source: 'binderbyte' },
+  { code: 'sicepat',    description: 'SiCepat Ekspres',       source: 'binderbyte' },
+  { code: 'anteraja',   description: 'AnterAja',              source: 'binderbyte' },
+  { code: 'lion',       description: 'Lion Parcel',           source: 'binderbyte' },
+  { code: 'ninja',      description: 'Ninja Xpress',          source: 'binderbyte' },
+  { code: 'sap',        description: 'SAP Express',           source: 'binderbyte' },
+  { code: 'ide',        description: 'ID Express',            source: 'binderbyte' },
+  { code: 'jnt',        description: 'J&T Express Indonesia', source: 'binderbyte' },
+  { code: 'wahana',     description: 'Wahana Express',        source: 'binderbyte' },
+  { code: 'spx',        description: 'Shopee Express',        source: 'binderbyte' },
+  // -------- 5 kurir kargo (dari pricelist XLSX lokal) --------
+  { code: 'jnt_cargo',  description: 'J&T Cargo (FastTrack)', source: 'pricelist' },
+  { code: 'mex_darat',  description: 'MEX Cargo (Darat)',     source: 'pricelist' },
+  { code: 'mex_udara',  description: 'MEX Cargo (Udara)',     source: 'pricelist' },
+  { code: 'herona',     description: 'Herona',                source: 'pricelist' },
+  { code: 'cmc',        description: 'CMC',                   source: 'pricelist' }
 ];
 
 // ------------------------------------------------------------------
@@ -374,14 +384,12 @@ function normalizeCostItem(raw: any, fallbackCourierCode: string, fallbackCourie
     cost: Number(raw?.price) || 0,
     etd: raw?.estimated ? `${raw.estimated} Hari` : '',
     courierCode: raw?.code || fallbackCourierCode,
-    courierName: raw?.name || fallbackCourierName
+    courierName: raw?.name || fallbackCourierName,
+    source: 'binderbyte' as const
   };
 }
 
 app.get('/api/cost', async (req, res) => {
-  const apiKey = ensureApiKey(res);
-  if (!apiKey) return;
-
   const origin = ((req.query.origin as string) || '').trim();
   const destination = ((req.query.destination as string) || '').trim();
   // ✅ FIX: dokumentasi BinderByte minta weight dalam KILOGRAM.
@@ -392,6 +400,15 @@ app.get('/api/cost', async (req, res) => {
   const couriersParam =
     (req.query.courier as string) || COST_COURIERS.map((c) => c.code).join(',');
 
+  // ✅ Filter sumber: 'binderbyte', 'pricelist', atau keduanya (default dua-duanya).
+  // Query param: source=binderbyte,pricelist
+  const sourceParam = ((req.query.source as string) || 'binderbyte,pricelist')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const useBinderbyte = sourceParam.includes('binderbyte');
+  const usePricelist = sourceParam.includes('pricelist');
+
   if (!origin || !destination) {
     return res.status(400).json({
       status: 400,
@@ -400,82 +417,218 @@ app.get('/api/cost', async (req, res) => {
     });
   }
 
-  // Daftar kurir dicegah >12 (hanya 12 yang support per dokumentasi).
+  // Pecah daftar kurir jadi binderbyte (maks 12) + pricelist.
   const courierList = couriersParam
     .split(',')
     .map((c) => c.trim())
-    .filter(Boolean)
-    .slice(0, 12);
+    .filter(Boolean);
 
-  // Build URL pakai query string (GET /v1/cost)
-  const params = new URLSearchParams({
-    api_key: apiKey,
-    origin,
-    destination,
-    weight: String(weightKg),
-    courier: courierList.join(',')
-  });
-  // Optional: volume (PxLxT) bila dikirim dari frontend.
-  if (req.query.volume) {
-    params.set('volume', String(req.query.volume));
-  }
-  const url = `${BASE_URL}/cost?${params.toString()}`;
+  const bbMeta = COST_COURIERS.filter((c) => c.source === 'binderbyte').map((c) => c.code);
+  const plMeta = COST_COURIERS.filter((c) => c.source === 'pricelist').map((c) => c.code);
+  const bbCouriers = courierList.filter((c) => bbMeta.includes(c));
+  const plCouriers = courierList.filter((c) => plMeta.includes(c));
 
-  try {
-    const upstream = await fetch(url);
-    const payload = await upstream.json().catch(() => ({} as any));
-
-    // ✅ FIX: response code BinderByte sekarang STRING ("200"/"400"),
-    // bukan number. Handle keduanya supaya aman terhadap versi API.
-    const okCode =
-      payload?.code === '200' || payload?.code === 200 || payload?.status === 200;
-    if (!upstream.ok || !okCode) {
-      return res.status(upstream.status || 502).json({
-        status: payload?.code || upstream.status || 502,
-        code: payload?.code || upstream.status || 502,
-        message: payload?.message || 'Gagal mengambil data ongkir dari BinderByte',
-        raw: payload
-      });
-    }
-
-    // Normalisasi response BinderByte baru → shape CostServiceOption[]
-    const data = payload?.data || {};
-    const resultsArr: any[] = Array.isArray(data?.results) ? data.results : [];
-    const allResults: any[] = [];
-    for (const courierGroup of resultsArr) {
-      const courierCode = courierGroup?.code || '';
-      const courierName = courierGroup?.name || courierCode.toUpperCase();
-      const costsArr: any[] = Array.isArray(courierGroup?.costs) ? courierGroup.costs : [];
-      for (const costItem of costsArr) {
-        allResults.push(normalizeCostItem(costItem, courierCode, courierName));
+  // ----- Task A: BinderByte (maks 12 kurir) -----
+  const bbPromise = (async (): Promise<any[]> => {
+    if (!useBinderbyte || bbCouriers.length === 0) return [];
+    const apiKey = getApiKey();
+    if (!apiKey) return []; // skip jika tidak ada API key
+    const limited = bbCouriers.slice(0, 12);
+    const params = new URLSearchParams({
+      api_key: apiKey,
+      origin,
+      destination,
+      weight: String(weightKg),
+      courier: limited.join(',')
+    });
+    if (req.query.volume) params.set('volume', String(req.query.volume));
+    const url = `${BASE_URL}/cost?${params.toString()}`;
+    try {
+      const upstream = await fetch(url);
+      const payload = await upstream.json().catch(() => ({} as any));
+      const okCode =
+        payload?.code === '200' || payload?.code === 200 || payload?.status === 200;
+      if (!upstream.ok || !okCode) return [];
+      const data = payload?.data || {};
+      const resultsArr: any[] = Array.isArray(data?.results) ? data.results : [];
+      const out: any[] = [];
+      for (const courierGroup of resultsArr) {
+        const courierCode = courierGroup?.code || '';
+        const courierName = courierGroup?.name || courierCode.toUpperCase();
+        const costsArr: any[] = Array.isArray(courierGroup?.costs) ? courierGroup.costs : [];
+        for (const costItem of costsArr) {
+          out.push(normalizeCostItem(costItem, courierCode, courierName));
+        }
       }
+      return out;
+    } catch {
+      return [];
     }
+  })();
 
-    if (allResults.length === 0) {
-      return res.status(200).json({
-        status: 200,
-        code: 200,
-        message: 'OK (tidak ada layanan ditemukan untuk rute ini)',
-        data: []
+  // ----- Task B: Pricelist (5 kurir kargo) -----
+  const plPromise = (async (): Promise<any[]> => {
+    if (!usePricelist || plCouriers.length === 0) return [];
+    try {
+      const quotes = computeCargoCost({
+        originCity: req.query.originCity as string || origin,
+        destCity: req.query.destCity as string || destination,
+        weightKg,
+        courierFilter: plCouriers
       });
+      return quotes;
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error('[pricelist] error:', e?.message);
+      return [];
     }
+  })();
 
-    allResults.sort((a, b) => a.cost - b.cost);
-    return res.json({
+  // Gabung hasil dari kedua sumber.
+  const [bbResults, plResults] = await Promise.all([bbPromise, plPromise]);
+  const allResults = [...bbResults, ...plResults];
+  allResults.sort((a, b) => a.cost - b.cost);
+
+  if (allResults.length === 0) {
+    return res.status(200).json({
       status: 200,
       code: 200,
-      message: payload?.message || 'Successfully calculated cost',
-      origin: data.origin,
-      destination: data.destination,
-      weight: data.weight,
-      data: allResults
+      message: 'OK (tidak ada layanan ditemukan untuk rute ini. Cek toggle sumber atau pilih rute lain.)',
+      data: []
+    });
+  }
+
+  return res.json({
+    status: 200,
+    code: 200,
+    message: 'Successfully calculated cost',
+    origin,
+    destination,
+    weight: weightKg,
+    data: allResults
+  });
+});
+
+// --- Pricelist cities (untuk autocomplete dropdown UI Cek Ongkir) ---
+app.get('/api/pricelist/cities', (_req, res) => {
+  try {
+    const cities = getUniqueCities();
+    res.json({ status: 200, code: 200, data: cities });
+  } catch (e: any) {
+    res.status(500).json({ status: 500, message: e?.message || 'Gagal load pricelist cities' });
+  }
+});
+
+// --- AI Ekstrak Resi (multipart upload gambar) ---
+app.post('/api/ai/extract-resi', (req, res) => {
+  const items: { filename: string; base64: string; mimeType: string }[] = [];
+  const errors: string[] = [];
+  let processed = 0;
+
+  let busboy: Busboy.Busboy;
+  try {
+    busboy = Busboy({
+      headers: req.headers,
+      limits: { files: 50, fileSize: 8 * 1024 * 1024 } // 8MB per file, maks 50 file
     });
   } catch (e: any) {
-    return res.status(502).json({
-      status: 502,
-      code: 502,
-      message: `Upstream error: ${e?.message || 'unknown'}`,
-      error: 'UPSTREAM_UNREACHABLE'
+    return res.status(400).json({
+      status: 400,
+      message: `Invalid multipart request: ${e?.message || 'unknown'}`
+    });
+  }
+
+  busboy.on('file', (fieldname, file, info) => {
+    const chunks: Buffer[] = [];
+    const filename = info.filename || `upload-${Date.now()}.jpg`;
+    const mimeType = info.mimeType || 'image/jpeg';
+    file.on('data', (chunk: Buffer) => chunks.push(chunk));
+    file.on('limit', () => {
+      errors.push(`${filename}: file terlalu besar (>8MB)`);
+    });
+    file.on('end', () => {
+      if (chunks.length === 0) {
+        errors.push(`${filename}: file kosong`);
+        processed++;
+        return;
+      }
+      const buf = Buffer.concat(chunks);
+      items.push({
+        filename,
+        base64: buf.toString('base64'),
+        mimeType
+      });
+      processed++;
+    });
+  });
+
+  busboy.on('error', (err: any) => {
+    res.status(500).json({ status: 500, message: `Upload error: ${err?.message}` });
+  });
+
+  busboy.on('finish', async () => {
+    if (items.length === 0) {
+      return res.status(400).json({
+        status: 400,
+        message: 'Tidak ada gambar yang diupload.',
+        errors
+      });
+    }
+    if (items.length > 50) {
+      return res.status(400).json({
+        status: 400,
+        message: `Maksimal 50 gambar per request (dikirim ${items.length}).`,
+        errors
+      });
+    }
+    try {
+      const results = await extractResiBatch(items, 5);
+      return res.json({
+        status: 200,
+        code: 200,
+        total: results.length,
+        success: results.filter((r) => r.ok).length,
+        failed: results.filter((r) => !r.ok).length,
+        results
+      });
+    } catch (e: any) {
+      return res.status(500).json({
+        status: 500,
+        message: `AI extract error: ${e?.message || 'unknown'}`
+      });
+    }
+  });
+
+  req.pipe(busboy);
+});
+
+// --- AI Health check (cek apakah Ollama reachable) ---
+app.get('/api/ai/health', async (_req, res) => {
+  const baseUrl = (process.env.OLLAMA_BASE_URL || 'https://api.ollama.com').replace(/\/$/, '');
+  const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
+  const model = (process.env.OLLAMA_MODEL || 'minimax-m3:cloud').trim();
+  try {
+    // Coba panggil /api/tags untuk cek apakah server hidup
+    const headers: Record<string, string> = {};
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const r = await fetch(`${baseUrl}/api/tags`, { headers, signal: AbortSignal.timeout(8000) });
+    return res.json({
+      status: 200,
+      configured: true,
+      reachable: r.ok,
+      model,
+      baseUrl,
+      apiKeyPresent: Boolean(apiKey)
+    });
+  } catch (e: any) {
+    return res.json({
+      status: 200,
+      configured: Boolean(apiKey || baseUrl),
+      reachable: false,
+      model,
+      baseUrl,
+      apiKeyPresent: Boolean(apiKey),
+      error: e?.message || 'Unreachable'
     });
   }
 });

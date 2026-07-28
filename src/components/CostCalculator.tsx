@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { COST_COURIERS } from '../data/couriers';
-import { CostServiceOption } from '../types';
+import { CostServiceOption, CostSource } from '../types';
 import {
   calculateShippingCost,
   fetchLocations,
@@ -17,7 +17,9 @@ import {
   AlertCircle,
   MapPin,
   Search,
-  X
+  X,
+  Database,
+  FileSpreadsheet
 } from 'lucide-react';
 
 /**
@@ -68,6 +70,12 @@ export const CostCalculator: React.FC = () => {
   const [selectedCouriers, setSelectedCouriers] = useState<string[]>(
     COST_COURIERS.map((c) => c.code)
   );
+  // ✅ Perbaikan.txt #3: user bisa pilih 1 atau 2 sumber ongkir:
+  //   'binderbyte' (12 kurir via API) dan/atau 'pricelist' (5 kurir kargo lokal).
+  const [selectedSources, setSelectedSources] = useState<CostSource[]>([
+    'binderbyte',
+    'pricelist'
+  ]);
   const [sortBy, setSortBy] = useState<'price' | 'etd' | 'courier'>('price');
 
   const [loading, setLoading] = useState<boolean>(false);
@@ -145,6 +153,19 @@ export const CostCalculator: React.FC = () => {
     );
   };
 
+  // ✅ Perbaikan.txt #3: toggle sumber ongkir. Minimal 1 sumber harus dipilih
+  // (jika kosong, tombol hitung di-disable).
+  const handleToggleSource = (src: CostSource) => {
+    setSelectedSources((prev) => {
+      if (prev.includes(src)) {
+        // Cegah user memilih 0 sumber (akan mengembalikan pesan error membingungkan)
+        if (prev.length === 1) return prev;
+        return prev.filter((s) => s !== src);
+      }
+      return [...prev, src];
+    });
+  };
+
   const calculatedWeight = useVolumetric
     ? Math.max(weight, Math.ceil((length * width * height) / 6000) * 1000)
     : weight;
@@ -163,16 +184,24 @@ export const CostCalculator: React.FC = () => {
     }
 
     try {
+      // ✅ Perbaikan.txt #3: teruskan `sources` + `originCity`/`destCity` ke
+      // server. Kota label dipakai engine pricelist untuk matching nama
+      // kabupaten/kota di XLSX lokal.
       const data = await calculateShippingCost(
         origin.id,
         destination.id,
         calculatedWeight,
-        selectedCouriers
+        selectedCouriers,
+        selectedSources,
+        {
+          originCity: origin.label,
+          destCity: destination.label
+        }
       );
       setResults(data);
       if (data.length === 0) {
         setError(
-          'Tidak ada data ongkir yang dikembalikan. Coba pilih lokasi lain atau cek subscription BinderByte Anda.'
+          'Tidak ada data ongkir yang dikembalikan. Coba pilih lokasi lain, ubah sumber ongkir, atau cek subscription BinderByte Anda.'
         );
       }
     } catch (err: any) {
@@ -467,6 +496,104 @@ export const CostCalculator: React.FC = () => {
             )}
           </div>
 
+          {/* ✅ Perbaikan.txt #3: Pilihan Sumber Ongkir.
+              User boleh pilih 1 atau 2 sumber:
+                - BinderByte: 12 kurir via API online
+                - Pricelist : 5 kurir kargo lokal (J&T Cargo, MEX, Herona, CMC) */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <Database className="w-4 h-4 text-emerald-400" />
+                <span>Sumber Perbandingan Ongkir</span>
+                <span className="text-[10px] text-slate-500 font-normal">
+                  (pilih 1 atau 2)
+                </span>
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSources(['binderbyte', 'pricelist'])}
+                  className="text-[11px] text-blue-400 hover:underline"
+                >
+                  Pilih Semua
+                </button>
+                <span className="text-slate-600">•</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSources(['binderbyte'])}
+                  className="text-[11px] text-slate-400 hover:underline"
+                >
+                  BinderByte saja
+                </button>
+                <span className="text-slate-600">•</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSources(['pricelist'])}
+                  className="text-[11px] text-slate-400 hover:underline"
+                >
+                  Pricelist saja
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  {
+                    code: 'binderbyte' as const,
+                    label: 'BinderByte',
+                    desc: '12 kurir via API online',
+                    count: 12,
+                    color: 'blue'
+                  },
+                  {
+                    code: 'pricelist' as const,
+                    label: 'Pricelist Kargo',
+                    desc: '5 kurir (J&T Cargo, MEX, Herona, CMC) dari XLSX lokal',
+                    count: 5,
+                    color: 'emerald'
+                  }
+                ]
+              ).map((src) => {
+                const isSelected = selectedSources.includes(src.code);
+                const selectedColor =
+                  src.color === 'blue'
+                    ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                    : 'bg-emerald-600/20 border-emerald-500 text-emerald-300';
+                return (
+                  <button
+                    key={src.code}
+                    type="button"
+                    onClick={() => handleToggleSource(src.code)}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all flex items-center gap-2 ${
+                      isSelected
+                        ? selectedColor
+                        : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
+                    }`}
+                    title={src.desc}
+                  >
+                    {isSelected ? (
+                      src.code === 'binderbyte' ? (
+                        <Database className="w-3.5 h-3.5" />
+                      ) : (
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                      )
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-slate-700" />
+                    )}
+                    <span>
+                      {src.label}{' '}
+                      <span className="text-[10px] opacity-70">({src.count})</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-[11px] text-slate-400 mt-2">
+              Hasil dari sumber yang dipilih akan digabung & diurut dari harga
+              termurah. Aktifkan keduanya untuk perbandingan paling lengkap.
+            </div>
+          </div>
+
           {/* Courier Selection */}
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -520,7 +647,13 @@ export const CostCalculator: React.FC = () => {
 
           <button
             type="submit"
-            disabled={loading || selectedCouriers.length === 0 || !origin || !destination}
+            disabled={
+              loading ||
+              selectedCouriers.length === 0 ||
+              selectedSources.length === 0 ||
+              !origin ||
+              !destination
+            }
             className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
@@ -581,6 +714,7 @@ export const CostCalculator: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {sortedResults.map((item, index) => {
               const isCheapest = index === 0 && sortBy === 'price';
+              const isPricelist = item.source === 'pricelist';
               return (
                 <div
                   key={`${item.courierCode}-${item.service}-${index}`}
@@ -596,11 +730,34 @@ export const CostCalculator: React.FC = () => {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-lg">
-                      {item.courierName}
-                    </span>
-                    <span className="text-xs text-slate-400 font-mono flex items-center gap-1">
+                  <div className="flex items-center justify-between mb-3 gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                      <span
+                        className={`text-xs font-bold uppercase tracking-wider border px-2.5 py-1 rounded-lg ${
+                          isPricelist
+                            ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                            : 'text-blue-400 bg-blue-500/10 border-blue-500/20'
+                        }`}
+                      >
+                        {item.courierName}
+                      </span>
+                      {/* ✅ Badge sumber: BinderByte (API) atau Pricelist (XLSX lokal) */}
+                      <span
+                        className={`text-[10px] font-semibold uppercase tracking-wider border px-1.5 py-0.5 rounded-md ${
+                          isPricelist
+                            ? 'text-emerald-300 bg-emerald-500/5 border-emerald-500/20'
+                            : 'text-blue-300 bg-blue-500/5 border-blue-500/20'
+                        }`}
+                        title={
+                          isPricelist
+                            ? 'Sumber: Pricelist XLSX lokal'
+                            : 'Sumber: API BinderByte'
+                        }
+                      >
+                        {isPricelist ? 'Pricelist' : 'BinderByte'}
+                      </span>
+                    </div>
+                    <span className="text-xs text-slate-400 font-mono flex items-center gap-1 shrink-0">
                       <Clock className="w-3.5 h-3.5 text-slate-500" />
                       {item.etd}
                     </span>

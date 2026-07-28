@@ -1,5 +1,12 @@
 import { CourierInfo } from '../types';
 
+// =====================================================================
+// Daftar kurir — gabungan tracking (24) + cek ongkir (12 BinderByte + 5 pricelist).
+// Field `source` di info kurir ongkir membedakan data source:
+//   - 'binderbyte' → hitung via /api/cost BinderByte
+//   - 'pricelist'  → hitung via XLSX lokal (J&T Cargo, MEX, Herona, CMC)
+// =====================================================================
+
 /**
  * 24 kurir cek resi sesuai dokumentasi resmi BinderByte.
  * Diambil dari tabel "List Kurir Cek Resi" dokumentasi.
@@ -8,6 +15,39 @@ import { CourierInfo } from '../types';
  * Daftar 22 kurir ongkir diambil dari tabel "List Kurir Cek Ongkir" dokumentasi.
  */
 export const COURIERS: CourierInfo[] = [
+  // -------- 5 kurir kargo tambahan (dari pricelist XLSX) --------
+  {
+    code: 'mex_darat',
+    name: 'MEX Cargo (Darat)',
+    shortName: 'MEX Darat',
+    category: 'kargo',
+    sampleAwb: '—',
+    source: 'pricelist'
+  },
+  {
+    code: 'mex_udara',
+    name: 'MEX Cargo (Udara)',
+    shortName: 'MEX Udara',
+    category: 'kargo',
+    sampleAwb: '—',
+    source: 'pricelist'
+  },
+  {
+    code: 'herona',
+    name: 'Herona',
+    shortName: 'Herona',
+    category: 'kargo',
+    sampleAwb: '—',
+    source: 'pricelist'
+  },
+  {
+    code: 'cmc',
+    name: 'CMC',
+    shortName: 'CMC',
+    category: 'kargo',
+    sampleAwb: '—',
+    source: 'pricelist'
+  },
   // -------- 24 kurir cek resi --------
   {
     code: 'jne',
@@ -229,7 +269,16 @@ export const COURIERS: CourierInfo[] = [
  * (perbaikan.txt). Field `shortName` mengikuti tabel dokumentasi:
  *   jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide, jnt, wahana, spx
  */
-export const COST_COURIER_CODES = [
+export const COST_COURIERS: CourierInfo[] = COURIERS.filter(
+  (c) => c.supportsCost || c.source === 'pricelist'
+);
+
+export const COST_COURIER_CODES = COST_COURIERS.map((c) => c.code) as readonly string[];
+
+export type CostCourierCode = (typeof COST_COURIER_CODES)[number];
+
+/** Daftar kurir ongkir dari BinderByte (12 kurir). */
+export const BINDERBYTE_COST_COURIER_CODES = [
   'jne',
   'pos',
   'tiki',
@@ -244,17 +293,14 @@ export const COST_COURIER_CODES = [
   'spx'
 ] as const;
 
-export type CostCourierCode = (typeof COST_COURIER_CODES)[number];
-
-/**
- * Hanya kurir yang KONFIRM support /v1/cost dari dokumentasi BinderByte
- * muncul di UI Cek Ongkir. (Versi sebelumnya melakukan `COURIERS.filter(c =>
- * c.supportsCost)` dan menghasilkan 22 kurir, beberapa di antaranya tidak
- * benar-benar support endpoint /v1/cost — siehe dokumentasi.)
- */
-export const COST_COURIERS: CourierInfo[] = COURIERS.filter((c) =>
-  (COST_COURIER_CODES as readonly string[]).includes(c.code)
-);
+/** Daftar kurir ongkir dari pricelist XLSX (5 kurir kargo). */
+export const PRICELIST_COST_COURIER_CODES = [
+  'jnt_cargo',
+  'mex_darat',
+  'mex_udara',
+  'herona',
+  'cmc'
+] as const;
 
 /**
  * Auto-detect courier code dari AWB string.
