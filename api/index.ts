@@ -711,7 +711,8 @@ app.get('/api/ai/health', async (_req, res) => {
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
   // Abaikan placeholder di health check juga (lihat isPlaceholder di atas).
   // ✅ FIX: default model vision Ollama yang valid.
-  const model = (process.env.OLLAMA_MODEL || 'llama3.2-vision').trim();
+  // Sekarang pakai "gemma4:31b-cloud" (per user request).
+  const model = (process.env.OLLAMA_MODEL || 'gemma4:31b-cloud').trim();
   try {
     // Coba panggil /api/tags untuk cek apakah server hidup
     const headers: Record<string, string> = {};

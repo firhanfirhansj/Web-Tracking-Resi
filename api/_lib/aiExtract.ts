@@ -12,7 +12,7 @@
 // Mendukung env var:
 //   - OLLAMA_BASE_URL   (default: https://ollama.com)
 //   - OLLAMA_API_KEY    (default: '')
-//   - OLLAMA_MODEL      (default: llama3.2-vision)
+//   - OLLAMA_MODEL      (default: gemma4:31b-cloud)
 // =====================================================================
 
 export interface ExtractedResi {
@@ -52,6 +52,22 @@ Schema JSON (WAJIB):
   "asuransi": number | null         // nilai asuransi dalam IDR (khusus J&T Cargo biasanya ada); null jika tidak ada
 }
 
+⚠️ PENTING untuk field "noResi" (PERBAIKAN):
+Gambar resi sering blur atau nomor resi terpotong. Pakai PATTERN AWALAN berikut
+sebagai hint untuk membaca & mengoreksi nomor resi. Jika noResi di foto
+terlihat cocok dengan salah satu prefix di bawah, isi sesuai pattern lengkap
+yang dikenali (jangan biarkan terpotong):
+
+  - Resi MEX         → diawal dengan "10238"
+  - Resi Lion        → diawal dengan "11LP"
+  - Resi J&T Cargo   → diawal dengan "2016"
+  - Resi Herona      → diawal dengan "BKSA"
+  - Resi CMC         → diawal dengan "103"
+  - Resi Indah Cargo → diawal dengan "BKS1CS"
+
+Jika tidak ada prefix yang cocok, kembalikan noResi apa adanya dari OCR (boleh null
+hanya jika benar-benar tidak terbaca sama sekali).
+
 Aturan:
 - Abaikan teks dekoratif, barcode, barcode angka.
 - Jika field tidak terbaca, isi null.
@@ -75,7 +91,8 @@ function getOllamaConfig() {
   // ✅ FIX: default model vision Ollama yang valid. Sebelumnya
   // "minimax-m3:cloud" adalah nama internal provider AI Claude Code, bukan
   // model Ollama — jelas tidak akan ditemukan di registry Ollama Cloud.
-  const model = (process.env.OLLAMA_MODEL || 'llama3.2-vision').trim();
+  // Sekarang pakai "gemma4:31b-cloud" (per user request).
+  const model = (process.env.OLLAMA_MODEL || 'gemma4:31b-cloud').trim();
   return { baseUrl, apiKey, model };
 }
 

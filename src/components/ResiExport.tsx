@@ -28,7 +28,7 @@ import {
 
 /**
  * ✅ Fitur Ekspor Data Resi dengan AI (perbaikan.txt #1).
- * User upload 1–50 gambar resi → AI (Ollama `llama3.2-vision`) extract
+ * User upload 1–50 gambar resi → AI (Ollama `gemma4:31b-cloud`) extract
  * field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
  */
 export const ResiExport: React.FC = () => {

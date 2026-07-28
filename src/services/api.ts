@@ -385,7 +385,7 @@ function fileToPayload(file: File): Promise<{ filename: string; base64: string; 
 
 /**
  * Kirim 1–50 gambar ke /api/ai/extract-resi. Server akan forward ke
- * Ollama (default model: llama3.2-vision) lalu kembalikan JSON terstruktur.
+ * Ollama (default model: gemma4:31b-cloud) lalu kembalikan JSON terstruktur.
  */
 export async function extractResiWithAI(files: File[]): Promise<ExtractedResi[]> {
   if (files.length === 0) return [];
@@ -427,7 +427,7 @@ export async function getAiHealth(): Promise<{
   return {
     configured: Boolean(json?.configured),
     reachable: Boolean(json?.reachable),
-    model: json?.model || 'llama3.2-vision',
+    model: json?.model || 'gemma4:31b-cloud',
     baseUrl: json?.baseUrl || '',
     apiKeyPresent: Boolean(json?.apiKeyPresent),
     error: json?.error

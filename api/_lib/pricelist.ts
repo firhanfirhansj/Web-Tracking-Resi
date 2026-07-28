@@ -43,7 +43,28 @@ function matchCity(haystack: string, needle: string): boolean {
   const h = norm(haystack);
   const n = norm(needle);
   if (!h || !n) return false;
-  return h === n || h.includes(n) || n.includes(h);
+  if (h === n || h.includes(n) || n.includes(h)) return true;
+
+  // ✅ FIX Bug: BinderByte label berbentuk "Kecamatan, Kabupaten, Provinsi"
+  // (mis. "Cileunyi, Bandung, Jawa Barat"). Pricelist XLSX biasanya
+  // hanya berisi "Kabupaten/Kota" (mis. "Bandung"). Maka kita split
+  // label user berdasarkan koma, lalu coba cocokkan SETIAP komponen
+  // sebagai token terpisah. Matching pertama yang berhasil menang.
+  const needleParts = n.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const part of needleParts) {
+    if (!part) continue;
+    if (h === part || h.includes(part) || part.includes(h)) return true;
+  }
+
+  // Coba juga split haystack (untuk J&T Cargo "Aceh - Kab Aceh Barat")
+  const haystackParts = h.split(/[-\/,]/).map((s) => s.trim()).filter(Boolean);
+  for (const hp of haystackParts) {
+    for (const np of needleParts) {
+      if (hp && (hp === np || hp.includes(np) || np.includes(hp))) return true;
+    }
+  }
+
+  return false;
 }
 
 // ------------------- Types -------------------
@@ -81,6 +102,29 @@ function parseJntCargo(): ParsedRow[] {
     const t6 = parseNumber(r[12]); // 1001+ per kg
     const etd = String(r[13] || '').trim();
     if (!destArea) continue;
+    // ✅ FIX Bug: Sebelumnya dest = "Aceh - Kab Aceh Barat" — terlalu panjang
+    // dan susah match dengan label BinderByte. Sekarang kita return 2 entry:
+    //   1. destArea saja ("Aceh") — match dengan pencarian provinsi
+    //   2. destCity ("Kab Aceh Barat") — match dengan kabupaten/kota
+    //   3. destArea + destCity (combo) untuk match kecamatan spesifik
+    // findRow() akan coba semua entry di getParsed().
+    if (destCity) {
+      out.push({
+        dest: destCity,
+        minKg: 10,
+        etd,
+        tiers: [
+          { upToKg: 10, flat: t0 },
+          { upToKg: 50, perKg: t1 },
+          { upToKg: 100, perKg: t2 },
+          { upToKg: 300, perKg: t3 },
+          { upToKg: 500, perKg: t4 },
+          { upToKg: 1000, perKg: t5 },
+          { upToKg: Infinity, perKg: t6 }
+        ]
+      });
+    }
+    // Selalu tambahkan entry "area - city" juga untuk match dengan label panjang
     out.push({
       dest: `${destArea} - ${destCity}`.trim(),
       minKg: 10,
@@ -96,7 +140,13 @@ function parseJntCargo(): ParsedRow[] {
       ]
     });
   }
-  return out;
+  // Dedup berdasar dest (supaya tidak duplikat entry di lookup)
+  const dedup = new Map<string, ParsedRow>();
+  for (const row of out) {
+    const key = norm(row.dest);
+    if (!dedup.has(key)) dedup.set(key, row);
+  }
+  return Array.from(dedup.values());
 }
 
 function parseHerona(): ParsedRow[] {
@@ -228,10 +278,17 @@ function computePrice(tiers: TierRule[], billableKg: number): number {
 
 function findRow(courier: string, dest: string): ParsedRow | null {
   const rows = getParsed(courier);
+  // ✅ FIX: Untuk J&T Cargo dengan dedup, entry pertama yang match menang.
+  // Sebelumnya sort by index masih bisa ke-ken entry "area - city" dulu.
+  // Sekarang kita prefer exact match (===) dulu, baru includes.
+  let fallback: ParsedRow | null = null;
   for (const r of rows) {
-    if (matchCity(r.dest, dest)) return r;
+    const h = norm(r.dest);
+    const n = norm(dest);
+    if (h === n) return r;
+    if (!fallback && matchCity(r.dest, dest)) fallback = r;
   }
-  return null;
+  return fallback;
 }
 
 export interface CargoQuote {

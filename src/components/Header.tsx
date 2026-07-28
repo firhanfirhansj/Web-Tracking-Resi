@@ -86,7 +86,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             </button>
 
             {/* ✅ Perbaikan.txt #1: Tab "Ekspor Data Resi" — upload foto resi 1-50,
-                AI (Ollama minimax-m3:cloud) ekstrak data, bisa salin/download CSV/Excel. */}
+                AI (Ollama gemma4:31b-cloud) ekstrak data, bisa salin/download CSV/Excel. */}
             <button
               onClick={() => setActiveTab('export')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
