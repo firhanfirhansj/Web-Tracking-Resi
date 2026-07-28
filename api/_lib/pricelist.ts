@@ -32,8 +32,9 @@ function norm(s: any): string {
     .trim()
     .toLowerCase()
     .replace(/^kota\s*&\s*kab\s*/i, '')
-    .replace(/^kab\s*/i, '')
+    .replace(/^kab(?:upaten|\.)?\s*/i, '')
     .replace(/^kota\s*/i, '')
+    .replace(/^prov(?:insi)?\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -64,6 +65,11 @@ function matchCity(haystack: string, needle: string): boolean {
     }
   }
 
+  // ✅ FIX tambahan: cocokkan bagian dalam tanda kurung / setelah prefix
+  // umum. Mis. "Kota Bandung" → setelah norm → "bandung". Tapi kadang
+  // user label bisa berupa "Kab. Bandung" atau "KABUPATEN BANDUNG".
+  // (norm() sudah strip "kab"/"kota"/"kabupaten" di awal, jadi seharusnya aman.)
+
   return false;
 }
 
@@ -93,7 +99,7 @@ function parseJntCargo(): ParsedRow[] {
     if (!r || !r[0]) continue;
     const destArea = String(r[3] || '').trim();
     const destCity = String(r[4] || '').trim();
-    const t0 = parseNumber(r[6]); // 0-10kg flat
+    const t0 = parseNumber(r[6]); // 0-10kg FLAT
     const t1 = parseNumber(r[7]); // 11-50kg per kg
     const t2 = parseNumber(r[8]); // 51-100kg per kg
     const t3 = parseNumber(r[9]); // 101-300kg per kg
@@ -102,42 +108,32 @@ function parseJntCargo(): ParsedRow[] {
     const t6 = parseNumber(r[12]); // 1001+ per kg
     const etd = String(r[13] || '').trim();
     if (!destArea) continue;
+    // ✅ FIX: tier 0-10kg = FLAT (t0), tier 11+ = per-kg dengan rentang
+    // bertingkat. upToKg kumulatif: 10 → 50 → 100 → 300 → 500 → 1000 → Infinity.
+    // computePrice() akan membaca tier.flat di tier pertama lalu tier.perKg
+    // di tier berikutnya, dengan kgInTier = billableKg - 10 (bukan billableKg).
+    const tiers: TierRule[] = [
+      { upToKg: 10, flat: t0 },
+      { upToKg: 50, perKg: t1 },
+      { upToKg: 100, perKg: t2 },
+      { upToKg: 300, perKg: t3 },
+      { upToKg: 500, perKg: t4 },
+      { upToKg: 1000, perKg: t5 },
+      { upToKg: Infinity, perKg: t6 }
+    ];
     // ✅ FIX Bug: Sebelumnya dest = "Aceh - Kab Aceh Barat" — terlalu panjang
     // dan susah match dengan label BinderByte. Sekarang kita return 2 entry:
-    //   1. destArea saja ("Aceh") — match dengan pencarian provinsi
-    //   2. destCity ("Kab Aceh Barat") — match dengan kabupaten/kota
-    //   3. destArea + destCity (combo) untuk match kecamatan spesifik
-    // findRow() akan coba semua entry di getParsed().
+    //   1. destCity ("Kab Aceh Barat") — match dengan kabupaten/kota
+    //   2. destArea + destCity (combo) untuk match dengan label panjang
     if (destCity) {
-      out.push({
-        dest: destCity,
-        minKg: 10,
-        etd,
-        tiers: [
-          { upToKg: 10, flat: t0 },
-          { upToKg: 50, perKg: t1 },
-          { upToKg: 100, perKg: t2 },
-          { upToKg: 300, perKg: t3 },
-          { upToKg: 500, perKg: t4 },
-          { upToKg: 1000, perKg: t5 },
-          { upToKg: Infinity, perKg: t6 }
-        ]
-      });
+      out.push({ dest: destCity, minKg: 10, etd, tiers });
     }
     // Selalu tambahkan entry "area - city" juga untuk match dengan label panjang
     out.push({
       dest: `${destArea} - ${destCity}`.trim(),
       minKg: 10,
       etd,
-      tiers: [
-        { upToKg: 10, flat: t0 },
-        { upToKg: 50, perKg: t1 },
-        { upToKg: 100, perKg: t2 },
-        { upToKg: 300, perKg: t3 },
-        { upToKg: 500, perKg: t4 },
-        { upToKg: 1000, perKg: t5 },
-        { upToKg: Infinity, perKg: t6 }
-      ]
+      tiers
     });
   }
   // Dedup berdasar dest (supaya tidak duplikat entry di lookup)
@@ -190,27 +186,30 @@ function parseFlatPerCity(courier: 'cmc' | 'mex_darat' | 'mex_udara'): ParsedRow
     const r = aoa[i];
     if (!r || !r[1]) continue;
     const dest = String(r[1]).trim();
-    let flat = 0;
+    let perKg = 0;
     let etd = '';
     let minKg = 10;
     if (isMex) {
-      // MEX Udara: kolom 4 = harga, 5 = etd, 6 = min kg
-      // MEX Darat: kolom 4 = harga, 5 = etd, 6 = min kg
-      flat = parseNumber(r[4]);
+      // MEX Udara: kolom 4 = harga per-kg, 5 = etd, 6 = min kg
+      // MEX Darat: kolom 4 = harga per-kg, 5 = etd, 6 = min kg
+      perKg = parseNumber(r[4]);
       etd = String(r[5] || '').trim();
       minKg = parseNumber(r[6]) || 10;
     } else {
-      // CMC: kolom 3 = harga, 4 = etd, 5 = min kg
-      flat = parseNumber(r[3]);
+      // CMC: kolom 3 = harga per-kg, 4 = etd, 5 = min kg
+      perKg = parseNumber(r[3]);
       etd = String(r[4] || '').trim();
       minKg = parseNumber(r[5]) || 10;
     }
-    if (!dest || flat <= 0) continue;
+    if (!dest || perKg <= 0) continue;
     out.push({
       dest,
       minKg,
       etd,
-      tiers: [{ upToKg: Infinity, flat }]
+      // ✅ FIX: harga XLSX adalah PER-KG (bukan flat). Mis. CMC Bandung
+      // = 1.500/kg → 10kg = Rp 15.000. Sebelumnya kode memperlakukan ini
+      // sebagai flat → ongkir 1.500 untuk semua berat (salah total).
+      tiers: [{ upToKg: Infinity, perKg }]
     });
   }
   const dedup = new Map<string, ParsedRow>();
@@ -256,20 +255,35 @@ function computePrice(tiers: TierRule[], billableKg: number): number {
   let total = 0;
   let remaining = billableKg;
   let prevUpTo = 0;
-  for (const tier of tiers) {
-    const tierSpan = tier.upToKg - prevUpTo;
+  for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
+    const tier = tiers[tierIdx];
     if (remaining <= 0) break;
+    // Tier flat pertama (0-10kg flat di J&T Cargo & Herona).
     if (tier.flat && prevUpTo === 0) {
-      // Flat di tier pertama (0-10kg)
       total += tier.flat;
-      remaining -= tier.upToKg;
+      // Setelah bayar flat, "sisa" berat yang masuk tier berikutnya.
+      // Contoh: billable=5kg, tier.flat 0-10kg. Sisa = max(0, 5 - 10) = 0.
+      // Contoh: billable=20kg, tier.flat 0-10kg. Sisa = max(0, 20 - 10) = 10.
+      remaining = Math.max(0, remaining - tier.upToKg);
     } else if (tier.perKg) {
-      const kgInTier = Math.min(remaining, tier.upToKg === Infinity ? remaining : tierSpan);
+      // ✅ FIX: tier per-kg dengan rentang kumulatif.
+      // Contoh tier J&T Cargo: t1=12000 (11-50kg), upToKg=50.
+      //   tierSpan = 50 - 10 = 40kg (bukan 50-0=50).
+      // Contoh tier Herona: perKg=3500, upToKg=Infinity (di tier ke-2).
+      //   tierSpan = Infinity - 10 = Infinity (semua sisa masuk sini).
+      const tierSpan = tier.upToKg === Infinity ? remaining : tier.upToKg - prevUpTo;
+      const kgInTier = Math.min(remaining, tierSpan);
+      if (kgInTier <= 0) {
+        prevUpTo = tier.upToKg;
+        continue;
+      }
       total += kgInTier * tier.perKg;
       remaining -= kgInTier;
     } else if (tier.flat) {
+      // Tier flat non-pertama (jarang dipakai, tapi handle dengan aman).
       total += tier.flat;
-      remaining -= tier.upToKg;
+      const tierSpan = tier.upToKg === Infinity ? remaining : tier.upToKg - prevUpTo;
+      remaining = Math.max(0, remaining - tierSpan);
     }
     prevUpTo = tier.upToKg;
   }

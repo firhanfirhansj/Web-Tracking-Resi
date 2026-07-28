@@ -24,7 +24,7 @@ function loadAll(): Map<string, any[][]> {
   if (cache) return cache;
   const map = new Map<string, any[][]>();
   const files = [
-    ['jnt_cargo', 'Onkgir J&T CArgo Agustus 2026.xlsx'],
+    ['jnt_cargo', 'Onkgir J&T Cargo.xlsx'],
     ['cmc', 'ongkir CMC.xlsx'],
     ['herona', 'ongkir HERONA.xlsx'],
     ['mex_darat', 'ongkir MEX Darat.xlsx'],

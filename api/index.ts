@@ -73,7 +73,7 @@ app.get('/api/debug/startup', (_req, res) => {
     // Test baca file XLSX
     try {
       const fs = require('fs');
-      const files = ['ongkir CMC.xlsx', 'ongkir HERONA.xlsx', 'ongkir MEX Darat.xlsx', 'ongkir MEX Udara.xlsx', 'Onkgir J&T CArgo Agustus 2026.xlsx'];
+      const files = ['ongkir CMC.xlsx', 'ongkir HERONA.xlsx', 'ongkir MEX Darat.xlsx', 'ongkir MEX Udara.xlsx', 'Onkgir J&T Cargo.xlsx'];
       info.xlsx_files = files.map((f) => ({ name: f, exists: fs.existsSync(f) }));
     } catch (e: any) {
       info.xlsx_files_error = e?.message;
