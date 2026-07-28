@@ -1,9 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
 import Busboy from 'busboy';
-import { computeCargoCost } from './_lib/pricelist';
-import { getUniqueCities } from './_lib/xlsxLoader';
-import { extractResiBatch } from './_lib/aiExtract';
+// ✅ FIX Bug #6: Vercel bundle TS → JS lalu Node ESM strict require
+// ekstensi eksplisit di import path. Tanpa ".js", runtime gagal
+// "ERR_MODULE_NOT_FOUND: Cannot find module '/var/task/api/_lib/pricelist'".
+import { computeCargoCost } from './_lib/pricelist.js';
+import { getUniqueCities } from './_lib/xlsxLoader.js';
+import { extractResiBatch } from './_lib/aiExtract.js';
 
 // =====================================================================
 // LacakResi Pro — Vercel Serverless Entry

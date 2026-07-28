@@ -11,7 +11,7 @@
 // Output: CostServiceOption[] dengan flag `source: 'pricelist'`.
 // =====================================================================
 
-import { getRawRows } from './xlsxLoader';
+import { getRawRows } from './xlsxLoader.js';
 
 // ------------------- Helpers -------------------
 
