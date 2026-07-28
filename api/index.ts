@@ -25,8 +25,82 @@ import { extractResiBatch } from './_lib/aiExtract';
 
 const app = express();
 
+// ✅ FIX Bug #5: Endpoint "ping" paling minimal yang menjawab SEBELUM
+// middleware apapun dipasang. Berguna untuk diagnosa module-level crash:
+// kalau /api/ping jawab tapi /api/health return 500, masalahnya ada di
+// middleware atau handler. Kalau /api/ping juga 500, masalahnya ada di
+// module-level imports atau syntax error.
+app.get('/api/ping', (_req, res) => {
+  res.status(200).json({ pong: true, ts: Date.now() });
+});
+
+// Debug endpoint: tangkap SEMUA error dari module-level initialization
+// (mis. gagal import file XLSX, atau xlsx package error). Return JSON
+// informatif SEBELUM throw crash.
+app.get('/api/debug/startup', (_req, res) => {
+  try {
+    const info: any = {
+      status: 'ok',
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cwd: process.cwd(),
+      env: {
+        // Hanya cek panjang & ada-tidak, jangan expose nilai
+        BINDERBYTE_API_KEY_set: Boolean(process.env.BINDERBYTE_API_KEY),
+        BINDERBYTE_API_KEY_len: (process.env.BINDERBYTE_API_KEY || '').length,
+        OLLAMA_BASE_URL_set: Boolean(process.env.OLLAMA_BASE_URL),
+        OLLAMA_API_KEY_set: Boolean(process.env.OLLAMA_API_KEY),
+        OLLAMA_API_KEY_len: (process.env.OLLAMA_API_KEY || '').length,
+        OLLAMA_MODEL_set: Boolean(process.env.OLLAMA_MODEL),
+        OLLAMA_MODEL_val: process.env.OLLAMA_MODEL || '(unset)',
+        VERCEL: process.env.VERCEL || '(unset)',
+        VERCEL_ENV: process.env.VERCEL_ENV || '(unset)',
+        NODE_ENV: process.env.NODE_ENV || '(unset)'
+      }
+    };
+    // Test require xlsx untuk lihat apakah module error
+    try {
+      require('xlsx');
+      info.xlsx_require_ok = true;
+    } catch (e: any) {
+      info.xlsx_require_ok = false;
+      info.xlsx_require_error = e?.message;
+    }
+    // Test baca file XLSX
+    try {
+      const fs = require('fs');
+      const files = ['ongkir CMC.xlsx', 'ongkir HERONA.xlsx', 'ongkir MEX Darat.xlsx', 'ongkir MEX Udara.xlsx', 'Onkgir J&T CArgo Agustus 2026.xlsx'];
+      info.xlsx_files = files.map((f) => ({ name: f, exists: fs.existsSync(f) }));
+    } catch (e: any) {
+      info.xlsx_files_error = e?.message;
+    }
+    res.json(info);
+  } catch (e: any) {
+    res.status(500).json({ status: 500, error: e?.message, stack: e?.stack });
+  }
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ✅ FIX Bug #5: Tambahkan error handler global. Sebelumnya function
+// crash tanpa body response — Vercel return 500 kosong. Sekarang setiap
+// error yang tidak ter-handle akan return JSON informatif.
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // eslint-disable-next-line no-console
+  console.error('[express error]', err?.stack || err);
+  try {
+    res.status(500).json({
+      status: 500,
+      message: err?.message || 'Internal server error',
+      error: err?.name || 'UNKNOWN_ERROR'
+    });
+  } catch {
+    // Jika response sudah ter-kirim, fallback ke end()
+    try { res.end(); } catch { /* ignore */ }
+  }
+});
 
 // ------------------------------------------------------------------
 // Config
