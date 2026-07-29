@@ -1,10 +1,13 @@
 import { CourierInfo } from '../types';
 
 // =====================================================================
-// Daftar kurir — gabungan tracking (24) + cek ongkir (12 BinderByte + 5 pricelist).
-// Field `source` di info kurir ongkir membedakan data source:
-//   - 'binderbyte' → hitung via /api/cost BinderByte
-//   - 'pricelist'  → hitung via XLSX lokal (J&T Cargo, MEX, Herona, CMC)
+// Daftar kurir (perbaikan.txt #1):
+//   - COURIERS: gabungan lengkap (tracking + ongkir). MEX/Herona/CMC
+//     PUNYA `source: 'pricelist'` sehingga tidak muncul di fitur tracking.
+//   - TRACK_COURIERS: hanya kurir yang BOLEH muncul di Single Tracking &
+//     Bulk Tracking (24 kurir BinderByte). Kurir pricelist (MEX/Herona/CMC)
+//     TIDAK ada di sini — mereka khusus Cek Estimasi Ongkir.
+//   - COST_COURIERS: 12 BinderByte + 5 pricelist untuk Cek Ongkir.
 // =====================================================================
 
 /**
@@ -15,7 +18,9 @@ import { CourierInfo } from '../types';
  * Daftar 22 kurir ongkir diambil dari tabel "List Kurir Cek Ongkir" dokumentasi.
  */
 export const COURIERS: CourierInfo[] = [
-  // -------- 5 kurir kargo tambahan (dari pricelist XLSX) --------
+  // -------- 5 kurir kargo (pricelist XLSX) — KHUSUS Cek Ongkir --------
+  // Field `source: 'pricelist'` menandai kurir ini TIDAK untuk tracking.
+  // perbaikan.txt #1: MEX/Herona/CMC hanya muncul di Cek Estimasi Ongkir.
   {
     code: 'mex_darat',
     name: 'MEX Cargo (Darat)',
@@ -265,6 +270,17 @@ export const COURIERS: CourierInfo[] = [
 // /v1/cost di BinderByte — mengirimkannya akan menyebabkan error.
 
 /**
+ * ✅ perbaikan.txt #1: Daftar kurir untuk fitur CEK RESI (Single Tracking &
+ * Bulk Tracking). Mengecualikan 4 kurir pricelist (mex_darat, mex_udara,
+ * herona, cmc) yang hanya tersedia di Cek Estimasi Ongkir.
+ */
+export const TRACK_COURIERS: CourierInfo[] = COURIERS.filter(
+  (c) => c.source !== 'pricelist'
+);
+
+export const TRACK_COURIER_CODES = TRACK_COURIERS.map((c) => c.code) as readonly string[];
+
+/**
  * Daftar 12 kurir yang support Cek Ongkir sesuai dokumentasi BinderByte
  * (perbaikan.txt). Field `shortName` mengikuti tabel dokumentasi:
  *   jne, pos, tiki, sicepat, anteraja, lion, ninja, sap, ide, jnt, wahana, spx
@@ -305,13 +321,15 @@ export const PRICELIST_COST_COURIER_CODES = [
 /**
  * Auto-detect courier code dari AWB string.
  * Cek prefix terpanjang dulu untuk akurasi lebih tinggi.
+ * Hanya mempertimbangkan kurir TRACK (bukan pricelist) — sesuai perbaikan.txt #1
+ * yang minta MEX/Herona/CMC dikecualikan dari fitur tracking.
  */
 export function detectCourierFromAwb(awbClean: string): string {
   const clean = awbClean.trim().toUpperCase();
   if (!clean) return 'jne';
 
   const sorted: { courier: CourierInfo; prefix: string }[] = [];
-  for (const courier of COURIERS) {
+  for (const courier of TRACK_COURIERS) {
     if (!courier.prefixes) continue;
     for (const prefix of [...courier.prefixes].sort((a, b) => b.length - a.length)) {
       sorted.push({ courier, prefix });

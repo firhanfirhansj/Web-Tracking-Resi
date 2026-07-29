@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { COURIERS, detectCourierFromAwb } from '../data/couriers';
+import { TRACK_COURIERS, detectCourierFromAwb } from '../data/couriers';
 import { WaybillTrackingResult } from '../types';
 import { trackWaybill } from '../services/api';
 import {
@@ -92,7 +92,7 @@ export const SingleTracking: React.FC = () => {
                 onChange={(e) => setCourier(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 text-slate-100 text-xs sm:text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500"
               >
-                {COURIERS.map((c) => (
+                {TRACK_COURIERS.map((c) => (
                   <option key={c.code} value={c.code}>
                     {c.name}
                   </option>

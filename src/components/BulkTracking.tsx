@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { COURIERS } from '../data/couriers';
+import { TRACK_COURIERS } from '../data/couriers';
 import { BulkTrackItem, WaybillStatus } from '../types';
 import { trackWaybillsBulk, exportBulkToCSV } from '../services/api';
 import { 
@@ -80,7 +80,7 @@ export const BulkTracking: React.FC = () => {
 
     return uniqueLines.map((rawLine, index) => {
       const { awb, number } = parseLine(rawLine, courierCode);
-      const courierObj = COURIERS.find((c) => c.code === courierCode);
+      const courierObj = TRACK_COURIERS.find((c) => c.code === courierCode);
 
       return {
         id: `bulk-${index}-${Date.now()}`,
@@ -273,7 +273,7 @@ export const BulkTracking: React.FC = () => {
                 onChange={(e) => setSelectedDefaultCourier(e.target.value)}
                 className="bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500"
               >
-                {COURIERS.map((c) => (
+                {TRACK_COURIERS.map((c) => (
                   <option key={c.code} value={c.code}>
                     {c.name}
                   </option>
@@ -477,7 +477,7 @@ export const BulkTracking: React.FC = () => {
             {filteredItems.map((item, idx) => {
               const res = item.result;
               const isExpanded = expandedId === item.id;
-              const courierObj = COURIERS.find((c) => c.code === item.courier);
+              const courierObj = TRACK_COURIERS.find((c) => c.code === item.courier);
 
               return (
                 <div

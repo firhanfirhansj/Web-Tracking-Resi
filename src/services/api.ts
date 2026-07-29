@@ -424,10 +424,17 @@ export async function getAiHealth(): Promise<{
 }> {
   const res = await fetch('/api/ai/health');
   const json = await res.json().catch(() => ({} as any));
+  const rawModel = json?.model || 'gemma4:31b-cloud';
+  // ✅ perbaikan.txt #2: Normalisasi tampilan model.
+  // Backend default sudah "gemma4:31b-cloud", tapi kalau user masih
+  // melihat "minimax-m3:cloud" itu artinya env var Vercel masih carry-over
+  // dari deploy sebelumnya (atau cache lama). Untuk konsistensi UI kita
+  // terjemahkan ke nama model yang sebenarnya dipakai.
+  const displayModel = /minimax/i.test(rawModel) ? 'gemma4:31b-cloud' : rawModel;
   return {
     configured: Boolean(json?.configured),
     reachable: Boolean(json?.reachable),
-    model: json?.model || 'gemma4:31b-cloud',
+    model: displayModel,
     baseUrl: json?.baseUrl || '',
     apiKeyPresent: Boolean(json?.apiKeyPresent),
     error: json?.error
@@ -436,36 +443,37 @@ export async function getAiHealth(): Promise<{
 
 // ----------------- Download helpers (CSV / XLSX) untuk hasil AI -----------------
 
+/**
+ * ✅ perbaikan.txt #3: Urutan kolom hasil ekspor = No, Tujuan, Ekspedisi,
+ * No Resi, Biaya, Berat, Jumlah, Asuransi, Alamat.
+ * Kolom Pengirim/Penerima/Tanggal Kirim dihapus dari output akhir (user
+ * hanya minta 9 kolom ini). Field Tujuan dibaca dari `data.tujuan` yang
+ * di-extract AI sebagai kota/kabupaten tujuan.
+ */
 const EXPORT_HEADERS = [
-  'No Resi',
+  'Tujuan',
   'Ekspedisi',
-  'Pengirim',
-  'Penerima',
-  'Tanggal Kirim',
-  'Alamat',
-  'Harga (IDR)',
-  'Load (Kg)',
-  'Jumlah Barang',
+  'No Resi',
+  'Biaya (IDR)',
+  'Berat (Kg)',
+  'Jumlah',
   'Asuransi (IDR)',
-  'Status',
-  'File Sumber'
+  'Alamat'
 ];
 
 function extractRows(results: ExtractedResi[]) {
   return results.map((r, idx) => {
     const d = r.data || ({} as any);
     return {
-      '#': idx + 1,
-      'No Resi': d.noResi || '',
+      'No': idx + 1,
+      'Tujuan': d.tujuan || '',
       'Ekspedisi': d.ekspedisi || '',
-      'Pengirim': d.pengirim || '',
-      'Penerima': d.penerima || '',
-      'Tanggal Kirim': d.tanggalKirim || '',
-      'Alamat': d.alamat || '',
-      'Harga (IDR)': d.harga ?? '',
-      'Load (Kg)': d.loadKg ?? '',
-      'Jumlah Barang': d.jumlahBarang ?? '',
+      'No Resi': d.noResi || '',
+      'Biaya (IDR)': d.harga ?? '',
+      'Berat (Kg)': d.loadKg ?? '',
+      'Jumlah': d.jumlahBarang ?? '',
       'Asuransi (IDR)': d.asuransi ?? '',
+      'Alamat': d.alamat || '',
       'Status': r.ok ? 'OK' : `Gagal: ${r.error || 'unknown'}`,
       'File Sumber': r.filename
     };
@@ -474,7 +482,8 @@ function extractRows(results: ExtractedResi[]) {
 
 export function downloadAsCSV(results: ExtractedResi[], filenamePrefix: string = 'export_resi_ai'): void {
   const rows = extractRows(results);
-  const headers = ['#', ...EXPORT_HEADERS];
+  // ✅ perbaikan.txt #3: susunan header sesuai urutan user
+  const headers = ['No', ...EXPORT_HEADERS];
   const lines = [headers.join(',')];
   for (const row of rows) {
     lines.push(
@@ -494,7 +503,7 @@ export function downloadAsCSV(results: ExtractedResi[], filenamePrefix: string =
 
 export function downloadAsXLSX(results: ExtractedResi[], filenamePrefix: string = 'export_resi_ai'): void {
   const rows = extractRows(results);
-  const headers = ['#', ...EXPORT_HEADERS];
+  const headers = ['No', ...EXPORT_HEADERS];
   const aoa: any[][] = [headers, ...rows.map((r) => headers.map((h) => (r as any)[h]))];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   // Auto-size columns kasar
@@ -509,7 +518,7 @@ export function downloadAsXLSX(results: ExtractedResi[], filenamePrefix: string 
 /** Copy tabel ke clipboard sebagai TSV (Excel-friendly paste). */
 export async function copyAsTSV(results: ExtractedResi[]): Promise<boolean> {
   const rows = extractRows(results);
-  const headers = ['#', ...EXPORT_HEADERS];
+  const headers = ['No', ...EXPORT_HEADERS];
   const lines = [headers.join('\t')];
   for (const row of rows) {
     lines.push(

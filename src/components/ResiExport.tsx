@@ -369,17 +369,17 @@ export const ResiExport: React.FC = () => {
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
-                  <th className="text-left py-3 px-2 font-semibold">#</th>
-                  <th className="text-left py-3 px-2 font-semibold">No Resi</th>
+                  {/* ✅ perbaikan.txt #3: urutan kolom = No, Tujuan, Ekspedisi,
+                      No Resi, Biaya, Berat, Jumlah, Asuransi, Alamat */}
+                  <th className="text-left py-3 px-2 font-semibold">No</th>
+                  <th className="text-left py-3 px-2 font-semibold">Tujuan</th>
                   <th className="text-left py-3 px-2 font-semibold">Ekspedisi</th>
-                  <th className="text-left py-3 px-2 font-semibold">Pengirim</th>
-                  <th className="text-left py-3 px-2 font-semibold">Penerima</th>
-                  <th className="text-left py-3 px-2 font-semibold">Tgl Kirim</th>
-                  <th className="text-left py-3 px-2 font-semibold">Alamat</th>
-                  <th className="text-right py-3 px-2 font-semibold">Harga</th>
-                  <th className="text-right py-3 px-2 font-semibold">Load (Kg)</th>
-                  <th className="text-right py-3 px-2 font-semibold">Qty</th>
+                  <th className="text-left py-3 px-2 font-semibold">No Resi</th>
+                  <th className="text-right py-3 px-2 font-semibold">Biaya</th>
+                  <th className="text-right py-3 px-2 font-semibold">Berat</th>
+                  <th className="text-right py-3 px-2 font-semibold">Jumlah</th>
                   <th className="text-right py-3 px-2 font-semibold">Asuransi</th>
+                  <th className="text-left py-3 px-2 font-semibold">Alamat</th>
                   <th className="text-center py-3 px-2 font-semibold">Status</th>
                 </tr>
               </thead>
@@ -394,27 +394,27 @@ export const ResiExport: React.FC = () => {
                       }`}
                     >
                       <td className="py-2.5 px-2 text-slate-500 font-mono">{idx + 1}</td>
-                      <td className="py-2.5 px-2 font-mono text-white">{d.noResi || '—'}</td>
+                      <td className="py-2.5 px-2 text-slate-200" title={d.tujuan || ''}>
+                        {d.tujuan || '—'}
+                      </td>
                       <td className="py-2.5 px-2">
                         <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-semibold uppercase">
                           {d.ekspedisi || '—'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-2 text-slate-200">{d.pengirim || '—'}</td>
-                      <td className="py-2.5 px-2 text-slate-200">{d.penerima || '—'}</td>
-                      <td className="py-2.5 px-2 text-slate-300 font-mono text-[11px]">
-                        {d.tanggalKirim || '—'}
-                      </td>
-                      <td className="py-2.5 px-2 text-slate-400 max-w-[200px] truncate" title={d.alamat || ''}>
-                        {d.alamat || '—'}
-                      </td>
+                      <td className="py-2.5 px-2 font-mono text-white">{d.noResi || '—'}</td>
                       <td className="py-2.5 px-2 text-right text-emerald-400 font-semibold">
                         {formatRupiah(d.harga)}
                       </td>
-                      <td className="py-2.5 px-2 text-right text-slate-300">{d.loadKg ?? '—'}</td>
+                      <td className="py-2.5 px-2 text-right text-slate-300">
+                        {d.loadKg != null ? `${d.loadKg} kg` : '—'}
+                      </td>
                       <td className="py-2.5 px-2 text-right text-slate-300">{d.jumlahBarang ?? '—'}</td>
                       <td className="py-2.5 px-2 text-right text-amber-400">
                         {d.asuransi != null ? formatRupiah(d.asuransi) : '—'}
+                      </td>
+                      <td className="py-2.5 px-2 text-slate-400 max-w-[200px] truncate" title={d.alamat || ''}>
+                        {d.alamat || '—'}
                       </td>
                       <td className="py-2.5 px-2 text-center">
                         {r.ok ? (

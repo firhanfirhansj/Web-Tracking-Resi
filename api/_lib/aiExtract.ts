@@ -21,6 +21,7 @@ export interface ExtractedResi {
   data?: {
     pengirim: string | null;
     penerima: string | null;
+    tujuan: string | null;
     tanggalKirim: string | null;
     noResi: string | null;
     alamat: string | null;
@@ -42,6 +43,7 @@ Schema JSON (WAJIB):
 {
   "pengirim": string | null,        // nama pengirim / shipper
   "penerima": string | null,        // nama penerima / consignee
+  "tujuan": string | null,          // kota/kabupaten tujuan (mis. "Surabaya", "Bandung"); null jika tidak terbaca
   "tanggalKirim": string | null,    // ISO date "YYYY-MM-DD" atau null
   "noResi": string | null,          // nomor resi / AWB
   "alamat": string | null,          // alamat penerima (atau tujuan)
@@ -88,10 +90,10 @@ function getOllamaConfig() {
     .replace(/\/+$/, '')
     .replace(/\/api$/, '');
   const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
-  // ✅ FIX: default model vision Ollama yang valid. Sebelumnya
-  // "minimax-m3:cloud" adalah nama internal provider AI Claude Code, bukan
-  // model Ollama — jelas tidak akan ditemukan di registry Ollama Cloud.
-  // Sekarang pakai "gemma4:31b-cloud" (per user request).
+  // ✅ perbaikan.txt #2: default model vision Ollama diubah ke
+  // "gemma4:31b-cloud" sesuai permintaan user (sebelumnya "minimax-m3:cloud"
+  // adalah nama internal provider AI Claude Code, bukan model Ollama —
+  // jelas tidak akan ditemukan di registry Ollama Cloud).
   const model = (process.env.OLLAMA_MODEL || 'gemma4:31b-cloud').trim();
   return { baseUrl, apiKey, model };
 }
@@ -124,6 +126,7 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
     return {
       pengirim: null,
       penerima: null,
+      tujuan: null,
       tanggalKirim: null,
       noResi: null,
       alamat: null,
@@ -150,6 +153,7 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
   return {
     pengirim: pick('pengirim', 'shipper', 'nama_pengirim') as any,
     penerima: pick('penerima', 'consignee', 'receiver', 'nama_penerima') as any,
+    tujuan: pick('tujuan', 'destination_city', 'kota_tujuan', 'city', 'kabupaten', 'kota') as any,
     tanggalKirim: pick('tanggalKirim', 'tanggal_kirim', 'tgl_kirim', 'tanggal', 'date') as any,
     noResi: pick('noResi', 'no_resi', 'resi', 'awb', 'nomor_resi') as any,
     alamat: pick('alamat', 'address', 'alamat_penerima', 'destination') as any,
