@@ -444,15 +444,16 @@ export async function getAiHealth(): Promise<{
 // ----------------- Download helpers (CSV / XLSX) untuk hasil AI -----------------
 
 /**
- * ✅ perbaikan.txt #3: Urutan kolom hasil ekspor = No, Tujuan, Ekspedisi,
- * No Resi, Biaya, Berat, Jumlah, Asuransi, Alamat.
- * Kolom Pengirim/Penerima/Tanggal Kirim dihapus dari output akhir (user
- * hanya minta 9 kolom ini). Field Tujuan dibaca dari `data.tujuan` yang
- * di-extract AI sebagai kota/kabupaten tujuan.
+ * ✅ catatan.txt: Urutan kolom hasil ekspor =
+ *   Ekspedisi, Pengirim, Penerima, No Resi, Biaya, Berat, Jumlah barang,
+ *   Asuransi (khusus jnt cargo), Alamat.
+ * Field Tujuan/Tanggal Kirim dihapus dari output akhir (user hanya minta
+ * 9 kolom ini).
  */
 const EXPORT_HEADERS = [
-  'Tujuan',
   'Ekspedisi',
+  'Pengirim',
+  'Penerima',
   'No Resi',
   'Biaya (IDR)',
   'Berat (Kg)',
@@ -466,8 +467,9 @@ function extractRows(results: ExtractedResi[]) {
     const d = r.data || ({} as any);
     return {
       'No': idx + 1,
-      'Tujuan': d.tujuan || '',
       'Ekspedisi': d.ekspedisi || '',
+      'Pengirim': d.pengirim || '',
+      'Penerima': d.penerima || '',
       'No Resi': d.noResi || '',
       'Biaya (IDR)': d.harga ?? '',
       'Berat (Kg)': d.loadKg ?? '',

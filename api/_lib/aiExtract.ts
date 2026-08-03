@@ -39,19 +39,23 @@ const SYSTEM_PROMPT = `Kamu adalah AI extractor data resi pengiriman Indonesia.
 Kamu akan diberikan gambar resi (bisa structured/printed form, struk Thermal, atau tulisan tangan).
 Tugas: Ekstrak data penting dari gambar ke JSON valid, TANPA teks lain di luar JSON.
 
-Schema JSON (WAJIB):
+Schema JSON (WAJIB) — 9 kolom ini yang WAJIB diisi selengkap-lengkapnya:
 {
-  "pengirim": string | null,        // nama pengirim / shipper
-  "penerima": string | null,        // nama penerima / consignee
-  "tujuan": string | null,          // kota/kabupaten tujuan (mis. "Surabaya", "Bandung"); null jika tidak terbaca
-  "tanggalKirim": string | null,    // ISO date "YYYY-MM-DD" atau null
+  "ekspedisi": string | null,       // nama ekspedisi (JNE, J&T, SiCepat, J&T Cargo, dll)
+  "pengirim": string | null,        // nama pengirim / shipper (wajib baca, ini kolom penting)
+  "penerima": string | null,        // nama penerima / consignee (wajib baca, ini kolom penting)
   "noResi": string | null,          // nomor resi / AWB
   "alamat": string | null,          // alamat penerima (atau tujuan)
   "harga": number | null,           // total ongkir dalam IDR (numeric, tanpa "Rp")
   "loadKg": number | null,          // berat barang dalam KG (decimal)
   "jumlahBarang": number | null,    // qty / koli / pieces
-  "ekspedisi": string | null,       // nama ekspedisi (JNE, J&T, SiCepat, J&T Cargo, dll)
   "asuransi": number | null         // nilai asuransi dalam IDR (khusus J&T Cargo biasanya ada); null jika tidak ada
+}
+
+Field opsional (tetap di-extract kalau ada, tapi tidak wajib):
+{
+  "tujuan": string | null,          // kota/kabupaten tujuan
+  "tanggalKirim": string | null     // ISO date "YYYY-MM-DD"
 }
 
 ⚠️ PENTING untuk field "noResi" (PERBAIKAN):
