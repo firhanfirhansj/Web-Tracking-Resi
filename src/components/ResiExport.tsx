@@ -28,8 +28,8 @@ import {
 
 /**
  * ✅ Fitur Ekspor Data Resi dengan AI (perbaikan.txt #1).
- * User upload 1–50 gambar resi → AI (Ollama `gemma4:31b-cloud`) extract
- * field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
+ * User upload 1–50 gambar resi → AI (KiosAPI, default `agnes-2.5-flash`)
+ * extract field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
  */
 export const ResiExport: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -184,8 +184,8 @@ export const ResiExport: React.FC = () => {
                 <div>
                   <strong>AI belum terhubung.</strong>{' '}
                   {aiHealth.apiKeyPresent
-                    ? 'Ollama server tidak bisa dihubungi — periksa OLLAMA_BASE_URL atau koneksi internet.'
-                    : 'Isi OLLAMA_API_KEY di file .env (lokal) atau Vercel Environment Variables (production) untuk mengaktifkan fitur AI Ekstrak Resi.'}{' '}
+                    ? 'KiosAPI tidak bisa dihubungi — periksa KIOSAPI_BASE_URL atau koneksi internet.'
+                    : 'Isi KIOSAPI_API_KEY di file .env (lokal) atau Vercel Environment Variables (production) untuk mengaktifkan fitur AI Ekstrak Resi.'}{' '}
                   Detail: {aiHealth.error || 'unreachable'}
                 </div>
               )}
