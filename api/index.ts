@@ -698,42 +698,54 @@ app.post('/api/ai/extract-resi', (req, res) => {
   req.pipe(busboy);
 });
 
-// --- AI Health check (cek apakah Ollama reachable) ---
+// --- AI Health check (KiosAPI) ---
 app.get('/api/ai/health', async (_req, res) => {
-  // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com.
-  // Sebelumnya default https://api.ollama.com selalu gagal → "unreachable".
-  // Auto-strip trailing slash dan suffix "/api" supaya kedua format bekerja.
-  const rawBase = process.env.OLLAMA_BASE_URL || 'https://ollama.com';
-  const baseUrl = rawBase
+  // Normalisasi base URL: buang trailing slash dan suffix "/v1" supaya
+  // KIOSAPI_BASE_URL boleh diisi "https://kiosapi.com" maupun
+  // "https://kiosapi.com/v1" tanpa menghasilkan "/v1/v1/...".
+  const baseUrl = (process.env.KIOSAPI_BASE_URL || 'https://kiosapi.com')
     .trim()
     .replace(/\/+$/, '')
-    .replace(/\/api$/, '');
-  const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
-  // Abaikan placeholder di health check juga (lihat isPlaceholder di atas).
-  // ✅ perbaikan.txt #2: default model vision Ollama diubah ke
-  // "gemma4:31b-cloud" sesuai permintaan user.
-  const model = (process.env.OLLAMA_MODEL || 'gemma4:31b-cloud').trim();
+    .replace(/\/v1$/, '');
+  const apiKey = (process.env.KIOSAPI_API_KEY || '').trim();
+  const model = (process.env.KIOSAPI_MODEL || 'agnes-2.5-flash').trim();
+  const apiKeyPresent = Boolean(apiKey) && !isPlaceholder(apiKey);
+
+  if (!apiKeyPresent) {
+    return res.json({
+      status: 200,
+      configured: false,
+      reachable: false,
+      model,
+      baseUrl,
+      apiKeyPresent: false,
+      error: 'KIOSAPI_API_KEY belum diisi'
+    });
+  }
+
   try {
-    // Coba panggil /api/tags untuk cek apakah server hidup
-    const headers: Record<string, string> = {};
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const r = await fetch(`${baseUrl}/api/tags`, { headers, signal: AbortSignal.timeout(8000) });
+    // GET /v1/models adalah endpoint OpenAI-compatible untuk validasi key.
+    const r = await fetch(`${baseUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000)
+    });
     return res.json({
       status: 200,
       configured: true,
       reachable: r.ok,
       model,
       baseUrl,
-      apiKeyPresent: Boolean(apiKey)
+      apiKeyPresent: true,
+      ...(r.ok ? {} : { error: `KiosAPI HTTP ${r.status}` })
     });
   } catch (e: any) {
     return res.json({
       status: 200,
-      configured: Boolean(apiKey || baseUrl),
+      configured: true,
       reachable: false,
       model,
       baseUrl,
-      apiKeyPresent: Boolean(apiKey),
+      apiKeyPresent: true,
       error: e?.message || 'Unreachable'
     });
   }
