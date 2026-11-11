@@ -368,12 +368,30 @@ export async function fetchPricelistCities(): Promise<PricelistCity> {
 // ----------------- AI Ekstrak Resi (KiosAPI) -----------------
 
 // Batas Vercel untuk body request serverless adalah 4,5 MB. Kompres gambar
-// besar di browser dan kirim per batch supaya upload 1–50 foto tidak
-// ditolak Vercel sebelum sampai ke API.
+// besar di browser dan kirim maksimal 2 foto per request. Concurrency
+// KiosAPI group Free sangat terbatas, jadi request kecil + jeda lebih aman
+// daripada mengirim 5 gambar sekaligus.
 const MAX_IMAGE_EDGE = 1600;
 const MAX_IMAGE_BYTES = 1_500_000;
 const MAX_BATCH_BYTES = 3_500_000;
-const MAX_BATCH_FILES = 5;
+const MAX_BATCH_FILES = 2;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Hanya error sementara yang layak dicoba ulang; error key/model tidak. */
+function isRetryableAiError(message?: string): boolean {
+  if (!message) return false;
+  if (/KIOSAPI_API_KEY|HTTP 40[13]|tidak ada di daftar|tidak tersedia untuk API key|terlalu besar|HTTP 413/i.test(message)) {
+    return false;
+  }
+  return (
+    /429|rate.?limit|sibuk|timeout|jaringan|network|fetch failed|econn|socket|aborted|tidak mengembalikan hasil/i.test(
+      message
+    ) || /\b5\d\d\b/.test(message)
+  );
+}
 
 /** Perkecil foto besar agar muat di limit Vercel; kalau gagal, pakai aslinya. */
 async function compressImage(file: File): Promise<File> {
@@ -405,20 +423,45 @@ async function compressImage(file: File): Promise<File> {
   }
 }
 
+/** Kirim satu batch kecil ke server; hasil selalu urut sesuai input. */
+async function requestExtractBatch(chunk: File[]): Promise<ExtractedResi[]> {
+  const fd = new FormData();
+  for (const file of chunk) fd.append('files', file, file.name);
+
+  const res = await fetch('/api/ai/extract-resi', { method: 'POST', body: fd });
+  const json = await res.json().catch(() => ({} as any));
+  if (!res.ok || json?.status !== 200) {
+    throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
+  }
+
+  const raw = Array.isArray(json?.results) ? (json.results as ExtractedResi[]) : [];
+  return chunk.map(
+    (file, i) =>
+      raw[i] || {
+        filename: file.name,
+        ok: false,
+        error: 'Server tidak mengembalikan hasil.'
+      }
+  );
+}
+
 /**
  * Kirim 1–50 gambar ke /api/ai/extract-resi (KiosAPI, model default
- * agnes-3.0-flash). File dikirim per batch kecil agar tidak melewati limit
- * body Vercel, dan hasil tetap terkumpul walau satu batch gagal.
+ * agnes-3.0-flash). Foto dikirim 2 per request agar tidak menabrak rate
+ * limit group Free, lalu foto yang gagal karena error sementara dicoba
+ * ulang satu per satu.
  */
 export async function extractResiWithAI(
   files: File[],
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  onStatus?: (message: string | null) => void
 ): Promise<ExtractedResi[]> {
   if (files.length === 0) return [];
   if (files.length > 50) {
     throw new Error('Maksimal 50 gambar per request.');
   }
 
+  onStatus?.('Menyiapkan dan mengompres gambar…');
   const prepared = await Promise.all(files.map(compressImage));
 
   // Kalau browser tidak bisa mengompres (mis. HEIC), jangan kirim file yang
@@ -446,55 +489,68 @@ export async function extractResiWithAI(
   }
   if (batch.length > 0) batches.push(batch);
 
-  const results: ExtractedResi[] = [];
+  const results: ExtractedResi[] = new Array(prepared.length);
   let completed = 0;
+  let fatalError: string | null = null;
 
+  onStatus?.('Membaca data resi dengan AI…');
   for (const chunk of batches) {
-    const fd = new FormData();
-    for (const file of chunk) fd.append('files', file, file.name);
-
-    let chunkResults: ExtractedResi[] = [];
-    let batchError: string | null = null;
+    const start = completed;
+    let chunkResults: ExtractedResi[];
     try {
-      const res = await fetch('/api/ai/extract-resi', { method: 'POST', body: fd });
-      const json = await res.json().catch(() => ({} as any));
-      if (!res.ok || json?.status !== 200) {
-        throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
-      }
-      chunkResults = (json?.results || []) as ExtractedResi[];
-      if (chunkResults.length === 0) {
-        chunkResults = chunk.map((file) => ({
-          filename: file.name,
-          ok: false,
-          error: 'Server tidak mengembalikan hasil.'
-        }));
-      }
+      chunkResults = await requestExtractBatch(chunk);
     } catch (e: any) {
-      batchError = e?.message || 'Gagal extract resi';
-      chunkResults = chunk.map((file) => ({
-        filename: file.name,
-        ok: false,
-        error: batchError as string
-      }));
+      const message = e?.message || 'Gagal extract resi';
+      chunkResults = chunk.map((file) => ({ filename: file.name, ok: false, error: message }));
+      fatalError = message;
     }
 
-    results.push(...chunkResults);
+    chunkResults.forEach((result, i) => {
+      results[start + i] = result;
+    });
     completed += chunk.length;
-    onProgress?.(Math.min(completed, files.length), files.length);
+    onProgress?.(Math.min(completed, prepared.length), prepared.length);
 
     // Error batch biasanya sistemik (key/quota/jaringan). Hentikan sisa
-    // batch dan tandai gagal supaya user tidak menunggu berkali-kali.
-    if (batchError) {
-      for (const file of prepared.slice(completed)) {
-        results.push({ filename: file.name, ok: false, error: batchError });
-      }
-      break;
+    // batch; foto yang belum diproses akan ikut dicoba ulang di bawah.
+    if (fatalError) break;
+  }
+
+  for (let i = 0; i < prepared.length; i++) {
+    if (!results[i]) {
+      results[i] = {
+        filename: prepared[i].name,
+        ok: false,
+        error: fatalError || 'Tidak diproses.'
+      };
     }
   }
 
-  if (results.length > 0 && results.every((r) => !r.ok)) {
-    throw new Error(results[0].error || 'Gagal mengekstrak data resi.');
+  // Retry pass: rate limit Free sering pulih setelah beberapa detik.
+  const retryIndexes = results
+    .map((result, index) => ({ result, index }))
+    .filter(({ result }) => !result.ok && isRetryableAiError(result.error))
+    .map(({ index }) => index);
+
+  if (retryIndexes.length > 0) {
+    onStatus?.(`Menunggu rate limit pulih, lalu mencoba ulang ${retryIndexes.length} foto…`);
+    await sleep(3_000);
+
+    let retried = 0;
+    for (const index of retryIndexes) {
+      retried++;
+      onStatus?.(`Mencoba ulang ${retried}/${retryIndexes.length}: ${prepared[index].name}`);
+      try {
+        const [retryResult] = await requestExtractBatch([prepared[index]]);
+        if (retryResult?.ok) results[index] = retryResult;
+      } catch {
+        // Biarkan error awal tetap tampil.
+      }
+      if (retried < retryIndexes.length) await sleep(2_000);
+    }
   }
+
+  onStatus?.(null);
   return results;
 }
 

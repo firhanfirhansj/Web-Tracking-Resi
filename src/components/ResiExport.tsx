@@ -31,12 +31,26 @@ import {
  * User upload 1–50 gambar resi → AI (KiosAPI `agnes-3.0-flash`) extract
  * field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
  */
+
+/** Ringkas error teknis jadi kalimat yang bisa dibaca user. */
+function friendlyAiError(message?: string): string {
+  const m = message || 'Tanpa keterangan';
+  if (/429|rate.?limit|sibuk/i.test(m)) return 'Rate limit KiosAPI (429): server gratis sedang sibuk.';
+  if (/timeout|waktu habis/i.test(m)) return 'Timeout: gambar terlalu lama diproses.';
+  if (/HTTP 40[13]|KIOSAPI_API_KEY/i.test(m)) return 'API key KiosAPI ditolak atau belum di-set.';
+  if (/HTTP 413|terlalu besar/i.test(m)) return 'Gambar terlalu besar untuk dikirim.';
+  if (/HTTP 5\d\d/i.test(m)) return 'Server KiosAPI sedang bermasalah (5xx).';
+  if (/tidak mengembalikan hasil/i.test(m)) return 'Server tidak mengembalikan hasil.';
+  return m;
+}
+
 export const ResiExport: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [results, setResults] = useState<ExtractedResi[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
   const [dragOver, setDragOver] = useState<boolean>(false);
@@ -83,6 +97,9 @@ export const ResiExport: React.FC = () => {
       setPreviews(next.map((f) => URL.createObjectURL(f)));
       return next;
     });
+    // Hasil lama tidak lagi sejajar dengan daftar file.
+    setResults([]);
+    setError(null);
   };
 
   const clearAll = () => {
@@ -103,14 +120,48 @@ export const ResiExport: React.FC = () => {
     setResults([]);
     setProgress({ current: 0, total: files.length });
     try {
-      const data = await extractResiWithAI(files, (completed, total) =>
-        setProgress({ current: completed, total })
+      const data = await extractResiWithAI(
+        files,
+        (completed, total) => setProgress({ current: completed, total }),
+        setStatus
       );
       setResults(data);
     } catch (e: any) {
       setError(e.message || 'Gagal mengekstrak data resi.');
     } finally {
       setLoading(false);
+      setStatus(null);
+    }
+  };
+
+  /** Proses ulang hanya foto yang gagal, tanpa mengulang yang sudah sukses. */
+  const retryFailed = async () => {
+    const indexes = results.map((r, i) => (r.ok ? -1 : i)).filter((i) => i >= 0);
+    if (indexes.length === 0) return;
+    const retryFiles = indexes.map((i) => files[i]).filter(Boolean);
+    if (retryFiles.length === 0) return;
+
+    setLoading(true);
+    setError(null);
+    setProgress({ current: 0, total: retryFiles.length });
+    try {
+      const data = await extractResiWithAI(
+        retryFiles,
+        (completed, total) => setProgress({ current: completed, total }),
+        setStatus
+      );
+      setResults((prev) => {
+        const next = [...prev];
+        indexes.forEach((fileIndex, i) => {
+          if (data[i]) next[fileIndex] = data[i];
+        });
+        return next;
+      });
+    } catch (e: any) {
+      setError(e.message || 'Gagal memproses ulang foto yang gagal.');
+    } finally {
+      setLoading(false);
+      setStatus(null);
     }
   };
 
@@ -135,6 +186,14 @@ export const ResiExport: React.FC = () => {
 
   const successCount = results.filter((r) => r.ok).length;
   const failedCount = results.filter((r) => !r.ok).length;
+  const failureGroups = new Map<string, string[]>();
+  for (const r of results) {
+    if (r.ok) continue;
+    const key = friendlyAiError(r.error);
+    const names = failureGroups.get(key) || [];
+    names.push(r.filename);
+    failureGroups.set(key, names);
+  }
   // Model dianggap siap kalau server reachable DAN model tersedia untuk key.
   const aiReady = Boolean(aiHealth?.reachable && aiHealth.modelAvailable !== false);
 
@@ -311,7 +370,7 @@ export const ResiExport: React.FC = () => {
               />
             </div>
             <p className="text-[11px] text-slate-400 mt-2 text-center">
-              AI sedang membaca gambar… (1–2 menit untuk 50 gambar)
+              {status || 'AI sedang membaca gambar…'}
             </p>
           </div>
         )}
@@ -452,9 +511,36 @@ export const ResiExport: React.FC = () => {
           </div>
 
           {failedCount > 0 && (
-            <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300">
-              <strong>Catatan:</strong> {failedCount} gambar gagal diproses. Kemungkinan karena
-              format tidak dikenali AI atau foto blur. Coba foto lebih jelas atau crop ke area resi.
+            <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <strong>{failedCount} gambar gagal diproses.</strong>{' '}
+                  <span className="opacity-80">Foto yang sudah berhasil tidak perlu diulang.</span>
+                </div>
+                <button
+                  onClick={retryFailed}
+                  disabled={loading}
+                  className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-semibold rounded-lg border border-amber-500/30 flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                  <span>Proses ulang {failedCount} foto gagal</span>
+                </button>
+              </div>
+              <ul className="space-y-1.5">
+                {[...failureGroups.entries()].map(([message, names]) => (
+                  <li key={message}>
+                    <span className="font-semibold">{names.length} foto:</span> {message}
+                    <div className="text-[10px] text-amber-200/70 break-all">
+                      {names.slice(0, 6).join(', ')}
+                      {names.length > 6 ? `, +${names.length - 6} lainnya` : ''}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[10px] text-amber-200/70">
+                Jika penyebabnya rate limit, tunggu 1–2 menit sebelum menekan tombol ulangi. Kalau
+                tetap 429, cek quota/rate limit di dashboard KiosAPI.
+              </p>
             </div>
           )}
         </div>
@@ -475,7 +561,8 @@ export const ResiExport: React.FC = () => {
               Upload 1–50 gambar sekaligus (drag-drop atau klik area upload di atas).
             </li>
             <li>
-              Klik <strong className="text-purple-400">Proses dengan AI</strong>. Tunggu 1–2 menit.
+              Klik <strong className="text-purple-400">Proses dengan AI</strong>. Foto diproses
+              bertahap agar tidak kena rate limit; tunggu beberapa menit.
             </li>
             <li>
               Tabel hasil muncul. Anda bisa <strong className="text-emerald-400">Salin</strong> ke

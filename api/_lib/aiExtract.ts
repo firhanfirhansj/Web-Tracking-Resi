@@ -195,6 +195,50 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
   };
 }
 
+// Rate limit group Free bersifat sementara. Retry dengan backoff supaya
+// sebagian gambar tidak gagal hanya karena request datang terlalu cepat.
+// Deadline per gambar menjaga satu request serverless tidak menggantung
+// lebih lama dari maxDuration di vercel.json.
+const MAX_ATTEMPTS_PER_MODEL = 3;
+const REQUEST_TIMEOUT_MS = 40_000;
+const IMAGE_DEADLINE_MS = 50_000;
+const MAX_RETRY_DELAY_MS = 15_000;
+const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Delay dari header Retry-After, atau backoff 1s/2s/4s + jitter. */
+function getRetryDelayMs(res: Response | null, attempt: number): number {
+  const header = res?.headers.get('retry-after');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) {
+      return Math.min(Math.max(0, seconds * 1000), MAX_RETRY_DELAY_MS);
+    }
+    const date = Date.parse(header);
+    if (!Number.isNaN(date)) {
+      return Math.min(Math.max(0, date - Date.now()), MAX_RETRY_DELAY_MS);
+    }
+  }
+  const backoff = 1000 * 2 ** attempt + Math.floor(Math.random() * 400);
+  return Math.min(backoff, MAX_RETRY_DELAY_MS);
+}
+
+function describeHttpError(status: number, body: string, model: string): string {
+  const detail = body.replace(/\s+/g, ' ').trim().slice(0, 240);
+  if (status === 429) {
+    return `Rate limit/kuota KiosAPI (HTTP 429, model ${model}). Group gratis berbagi kapasitas; coba lagi beberapa saat atau cek quota di dashboard KiosAPI.` +
+      (detail ? ` Detail: ${detail}` : '');
+  }
+  if (status === 401 || status === 403) {
+    return `KiosAPI menolak API key (HTTP ${status}, model ${model}). Periksa KIOSAPI_API_KEY dan group token.` +
+      (detail ? ` Detail: ${detail}` : '');
+  }
+  return `KiosAPI HTTP ${status} (model ${model}): ${detail || 'tanpa pesan'}`;
+}
+
 const SYSTEM_PROMPT =
   'Kamu adalah AI OCR data resi pengiriman Indonesia. ' +
   'Jawab HANYA dengan satu objek JSON valid, tanpa markdown dan tanpa penjelasan.';
@@ -252,7 +296,7 @@ function contentToText(content: any): string {
   return '';
 }
 
-/** Ekstrak satu gambar menggunakan KiosAPI dengan fallback multi-model. */
+/** Ekstrak satu gambar menggunakan KiosAPI dengan retry + fallback model. */
 export async function extractResiFromImage(
   filename: string,
   imageBase64: string,
@@ -262,70 +306,109 @@ export async function extractResiFromImage(
 
   const modelsToTry = Array.from(new Set([model, ...fallbackModels]));
   const imagePart = buildImagePart(imageBase64, mimeType);
+  const deadline = Date.now() + IMAGE_DEADLINE_MS;
   let lastError = '';
 
   for (const tryModel of modelsToTry) {
-    try {
-      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        signal: AbortSignal.timeout(60_000),
-        body: JSON.stringify({
-          model: tryModel,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: [{ type: 'text', text: USER_PROMPT }, imagePart]
+    // 429 berasal dari kapasitas group Free yang dipakai bersama, jadi
+    // model fallback tidak akan menolong. 5xx masih dicoba ke model lain.
+    let sharedCapacityFailure = false;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining < 2_000) {
+        lastError = `Waktu habis saat memproses ${filename} (model ${tryModel}).`;
+        break;
+      }
+
+      try {
+        const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`
+          },
+          signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
+          body: JSON.stringify({
+            model: tryModel,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              {
+                role: 'user',
+                content: [{ type: 'text', text: USER_PROMPT }, imagePart]
+              }
+            ],
+            temperature: 0,
+            max_tokens: 1024,
+            stream: false
+          })
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          lastError = describeHttpError(res.status, errText, tryModel);
+
+          if (res.status === 401 || res.status === 403) {
+            return { filename, ok: false, error: lastError };
+          }
+
+          if (RETRYABLE_HTTP_STATUS.has(res.status)) {
+            sharedCapacityFailure = res.status === 429;
+            const delay = getRetryDelayMs(res, attempt);
+            if (attempt < MAX_ATTEMPTS_PER_MODEL - 1 && Date.now() + delay < deadline) {
+              await sleep(delay);
+              continue;
             }
-          ],
-          temperature: 0,
-          max_tokens: 1024,
-          stream: false
-        })
-      });
+            break;
+          }
 
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        lastError = `KiosAPI HTTP ${res.status} (${tryModel}): ${errText.slice(0, 300) || 'tanpa pesan'}`;
-        // 401/403 tidak akan berubah walau ganti model.
-        if (res.status === 401 || res.status === 403) {
-          return {
-            filename,
-            ok: false,
-            error: `${lastError}. Periksa KIOSAPI_API_KEY dan group token.`
-          };
+          // Model tidak mendukung vision / tidak ada di group: coba fallback.
+          break;
         }
-        continue;
-      }
 
-      const json = await res.json().catch(() => ({} as any));
-      const apiError = json?.error;
-      if (apiError) {
-        lastError = `KiosAPI error (${tryModel}): ${apiError?.message || JSON.stringify(apiError)}`;
-        continue;
-      }
+        const json = await res.json().catch(() => ({} as any));
+        const apiError = json?.error;
+        if (apiError) {
+          lastError = `KiosAPI error (${tryModel}): ${apiError?.message || JSON.stringify(apiError)}`;
+          if (/rate.?limit|too many|quota/i.test(lastError)) {
+            sharedCapacityFailure = true;
+            const delay = getRetryDelayMs(res, attempt);
+            if (attempt < MAX_ATTEMPTS_PER_MODEL - 1 && Date.now() + delay < deadline) {
+              await sleep(delay);
+              continue;
+            }
+          }
+          break;
+        }
 
-      const content = contentToText(json?.choices?.[0]?.message?.content ?? json?.response);
-      const parsed = tryParseJson(content);
-      if (!parsed) {
-        lastError = `Model ${tryModel} tidak mengembalikan JSON valid.`;
-        continue;
-      }
+        const content = contentToText(json?.choices?.[0]?.message?.content ?? json?.response);
+        const parsed = tryParseJson(content);
+        if (!parsed) {
+          lastError = `Model ${tryModel} tidak mengembalikan JSON valid.`;
+          break;
+        }
 
-      return {
-        filename,
-        ok: true,
-        data: normalizeKeys(parsed)
-      };
-    } catch (e: any) {
-      lastError = e?.name === 'TimeoutError'
-        ? `Model ${tryModel} timeout setelah 60 detik.`
-        : `${tryModel}: ${e?.message || 'Gagal memanggil KiosAPI'}`;
+        return {
+          filename,
+          ok: true,
+          data: normalizeKeys(parsed)
+        };
+      } catch (e: any) {
+        const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+        lastError = isTimeout
+          ? `Model ${tryModel} timeout setelah ${Math.round(Math.min(REQUEST_TIMEOUT_MS, remaining) / 1000)} detik.`
+          : `${tryModel}: ${e?.message || 'Gagal memanggil KiosAPI'}`;
+
+        // Error jaringan sesaat: ulangi kalau masih ada waktu.
+        if (attempt < MAX_ATTEMPTS_PER_MODEL - 1 && Date.now() + 1_000 < deadline) {
+          await sleep(getRetryDelayMs(null, attempt));
+          continue;
+        }
+        break;
+      }
     }
+
+    if (sharedCapacityFailure) break;
   }
 
   return {
@@ -338,7 +421,7 @@ export async function extractResiFromImage(
 /** Ekstrak batch menggunakan KiosAPI dengan fallback multi-model. */
 export async function extractResiBatchKiosapi(
   items: { filename: string; base64: string; mimeType?: string }[],
-  concurrency: number = 5
+  concurrency: number = 2
 ): Promise<ExtractedResi[]> {
   const results: ExtractedResi[] = [];
   for (let i = 0; i < items.length; i += concurrency) {

@@ -682,7 +682,7 @@ app.post('/api/ai/extract-resi', (req, res) => {
       });
     }
     try {
-      const results = await extractResiBatchKiosapi(items, 5);
+      const results = await extractResiBatchKiosapi(items, 2);
       return res.json({
         status: 200,
         code: 200,
@@ -791,6 +791,10 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
     try { res.end(); } catch { /* ignore */ }
   }
 });
+
+// Batas waktu function di Vercel. Vision + retry butuh lebih dari default
+// 10 detik; 60 detik cukup untuk 2 gambar paralel (lihat aiExtract.ts).
+export const config = { maxDuration: 60 };
 
 // Export `app` agar server.ts (dev only) bisa import tanpa menyebabkan
 // Vercel serverless bundle ikut-include server.ts.
