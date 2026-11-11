@@ -1,20 +1,21 @@
-// =====================================================================
+// ====================================================================
 // api/_lib/aiExtract.ts
-// =====================================================================
-// Service untuk ekstrak data resi dari gambar via Ollama API.
+// ====================================================================
+// Service untuk ekstrak data resi dari gambar via KiosAPI.
 //
 // Alur:
-//   1. Kirim gambar ke Ollama /api/chat dengan field `images` (base64)
-//   2. Pakai prompt sistem + user untuk meminta output JSON terstruktur
-//   3. (Tanpa fallback OCR Tesseract untuk menjaga bundle size — bila
-//      model tidak support vision, return error informatif)
+//   1. Kirim gambar ke KiosAPI /v1/chat/completions dengan format OpenAI-compatible
+//   2. Pakai prompt sistem + user untuk meminta output JSON terstructured
+//   3. Dukai sistem fallback multi-model: jika model pertama gagal (bukan support vision),
+//      coba model berikutnya dari Free group KiosAPI
 //
 // Mendukung env var:
-//   - OLLAMA_BASE_URL   (default: https://ollama.com)
-//   - OLLAMA_API_KEY    (default: '')
-//   - OLLAMA_MODEL      (default: gemma4:31b-cloud)
-// =====================================================================
-
+//   - KIOSAPI_API_KEY   (required - dideploy saat sudah punya account KiosAPI)
+//   - KIOSAPI_BASE_URL  (default: https://kiosapi.com)
+//   - KIOSAPI_MODEL      (default: agnes-2.5-flash - model vision dari Free group)
+//   - KIOSAPI_FALLBACK_MODELS (komma-dipisah, default: glm-5.3-flash,gemini-2.0-flash)
+// ====================================================================
+ 
 export interface ExtractedResi {
   filename: string;
   ok: boolean;
@@ -34,74 +35,25 @@ export interface ExtractedResi {
   raw?: string;
   error?: string;
 }
+ 
+// Model vision dari Free group KiosAPI yang didukung.
+// Lihat dokumentasi: https://docs.kiosapi.com
+const KIOSAPI_VISION_MODELS = [
+  'agnes-2.5-flash',       // Support vision: image understanding, image URL inputs
+  'glm-5.3-flash',        // Support vision
+  'gemini-2.0-flash',    // Vision capable Google Gemini
+  'glm-5.3',             // Vision capable GLM
+  'qwen3.8-flash',       // Vision capable Qwen
+  'deepseek-v4-flash-vision-exp-free', // Vision capable DeepSeek (free)
+] as const;
 
-const SYSTEM_PROMPT = `Kamu adalah AI extractor data resi pengiriman Indonesia.
-Kamu akan diberikan gambar resi (bisa structured/printed form, struk Thermal, atau tulisan tangan).
-Tugas: Ekstrak data penting dari gambar ke JSON valid, TANPA teks lain di luar JSON.
-
-Schema JSON (WAJIB) — 9 kolom ini yang WAJIB diisi selengkap-lengkapnya:
-{
-  "ekspedisi": string | null,       // nama ekspedisi (JNE, J&T, SiCepat, J&T Cargo, dll)
-  "pengirim": string | null,        // nama pengirim / shipper (wajib baca, ini kolom penting)
-  "penerima": string | null,        // nama penerima / consignee (wajib baca, ini kolom penting)
-  "noResi": string | null,          // nomor resi / AWB
-  "alamat": string | null,          // alamat penerima (atau tujuan)
-  "harga": number | null,           // total ongkir dalam IDR (numeric, tanpa "Rp")
-  "loadKg": number | null,          // berat barang dalam KG (decimal)
-  "jumlahBarang": number | null,    // qty / koli / pieces
-  "asuransi": number | null         // nilai asuransi dalam IDR (khusus J&T Cargo biasanya ada); null jika tidak ada
-}
-
-Field opsional (tetap di-extract kalau ada, tapi tidak wajib):
-{
-  "tujuan": string | null,          // kota/kabupaten tujuan
-  "tanggalKirim": string | null     // ISO date "YYYY-MM-DD"
-}
-
-⚠️ PENTING untuk field "noResi" (PERBAIKAN):
-Gambar resi sering blur atau nomor resi terpotong. Pakai PATTERN AWALAN berikut
-sebagai hint untuk membaca & mengoreksi nomor resi. Jika noResi di foto
-terlihat cocok dengan salah satu prefix di bawah, isi sesuai pattern lengkap
-yang dikenali (jangan biarkan terpotong):
-
-  - Resi MEX         → diawal dengan "10238"
-  - Resi Lion        → diawal dengan "11LP"
-  - Resi J&T Cargo   → diawal dengan "2016"
-  - Resi Herona      → diawal dengan "BKSA"
-  - Resi CMC         → diawal dengan "103"
-  - Resi Indah Cargo → diawal dengan "BKS1CS"
-
-Jika tidak ada prefix yang cocok, kembalikan noResi apa adanya dari OCR (boleh null
-hanya jika benar-benar tidak terbaca sama sekali).
-
-Aturan:
-- Abaikan teks dekoratif, barcode, barcode angka.
-- Jika field tidak terbaca, isi null.
-- Jangan tambahkan field di luar schema.
-- Output HARUS JSON valid saja, tanpa markdown code block.`;
-
-const USER_PROMPT = `Ekstrak data dari gambar resi ini dan output JSON valid saja.`;
-
-function getOllamaConfig() {
-  // ✅ FIX: base URL Ollama Cloud yang benar adalah https://ollama.com
-  // (sebelumnya tertulis https://api.ollama.com — domain itu tidak valid
-  // untuk Ollama Cloud, menyebabkan "unreachable" di Perbaikan.txt).
-  // Auto-strip trailing slash dan suffix "/api" supaya env var
-  // "https://ollama.com/api" (format umum) tetap bekerja.
-  const rawBase = process.env.OLLAMA_BASE_URL || 'https://ollama.com';
-  const baseUrl = rawBase
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/api$/, '');
-  const apiKey = (process.env.OLLAMA_API_KEY || '').trim();
-  // ✅ perbaikan.txt #2: default model vision Ollama diubah ke
-  // "gemma4:31b-cloud" sesuai permintaan user (sebelumnya "minimax-m3:cloud"
-  // adalah nama internal provider AI Claude Code, bukan model Ollama —
-  // jelas tidak akan ditemukan di registry Ollama Cloud).
-  const model = (process.env.OLLAMA_MODEL || 'gemma4:31b-cloud').trim();
-  return { baseUrl, apiKey, model };
-}
-
+type KiosapiVisionModel = typeof KIOSAPI_VISION_MODELS[number];
+ 
+// Konfigurasi dasar
+export const KIOSAPI_BASE_URL = "https://kiosapi.com";
+export const KIOSAPI_DEFAULT_MODEL = "agnes-2.5-flash";
+export const KIOSAPI_FALLBACK_MODELS_DEFAULT = "glm-5.3-flash,gemini-2.0-flash";
+ 
 /** Tolerant JSON parser — handles model output yang disertai teks lain. */
 function tryParseJson(text: string): any | null {
   if (!text) return null;
@@ -124,7 +76,7 @@ function tryParseJson(text: string): any | null {
     return null;
   }
 }
-
+ 
 function normalizeKeys(input: any): ExtractedResi['data'] {
   if (!input || typeof input !== 'object') {
     return {
@@ -168,84 +120,133 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
     asuransi: num(pick('asuransi', 'insurance', 'nilai_asuransi'))
   };
 }
-
+ 
+/** KiosAPI Configuration — lempar error kalau key belum ada */
+function getKiosapiConfig() {
+  const apiKey = process.env.KIOSAPI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("KIOSAPI_API_KEY tidak ditemukan di environment variable.\n\nLangkah setup:\n1. Daftar di https://kiosapi.com\n2. Buat account dan verifikasi Telegram (untuk Free group)\n3. Buat API key di Console -> Tokens, pilih grup \"Free\"\n4. Set KIOSAPI_API_KEY di environment (Vercel: Settings > Environment Variables, lokal: .env.local)\n5. Deploy ulang aplikasi\n\n⚠️ Penting: Gunakan grup \"Free\" saat membuat token, bukan grup lain.\n\nModel Free group yang tersedia (gratis, 0 cost): agnes-2.5-flash, glm-5.3-flash, gemini-2.0-flash, glm-5.3, qwen3.8-flash, dll.\n\nJika belum punya key, fitur AI Ekstrak Resi akan tampil \"tidak terhubung\".");
+  }
+  const baseUrl = process.env.KIOSAPI_BASE_URL || "https://kiosapi.com";
+  const model = process.env.KIOSAPI_MODEL || "agnes-2.5-flash";
+  const fallbackModels = (process.env.KIOSAPI_FALLBACK_MODELS || "glm-5.3-flash,gemini-2.0-flash").split(",").map(m => m.trim()).filter(Boolean);
+  return { apiKey, baseUrl, model, fallbackModels };
+}
+ 
+/** Build image content for KiosAPI format */
+function buildKiosapiImageContent(imageBase64: string, mimeType: string) {
+  const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+  return {
+    type: "image_url" as const,
+    image_url: {
+      url: `data:${mimeType};base64,${cleanBase64}`,
+      detail: "auto"
+    }
+  };
+}
+ 
+/** Ekstrak satu gambar menggunakan KiosAPI dengan fallback multi-model. */
 export async function extractResiFromImage(
   filename: string,
   imageBase64: string,
   mimeType: string = 'image/jpeg'
 ): Promise<ExtractedResi> {
-  const { baseUrl, apiKey, model } = getOllamaConfig();
-
-  // Strip prefix data:image/...;base64, kalau ada
-  const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json'
-  };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
-  // Pakai /api/chat (vision capability paling reliable di Ollama)
-  const url = `${baseUrl}/api/chat`;
-
-  const body = {
-    model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: USER_PROMPT,
-        images: [cleanBase64]
+  const { apiKey, baseUrl, model, fallbackModels } = getKiosapiConfig();
+ 
+  // Build image content for KiosAPI format
+  const imageContent = buildKiosapiImageContent(imageBase64, mimeType);
+ 
+  // Tentukan model yang akan dicoba: utama + fallback
+  const modelsToTry: string[] = [model, ...fallbackModels];
+ 
+  for (const tryModel of modelsToTry) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    };
+ 
+    const url = `${baseUrl}/v1/chat/completions`;
+ 
+    const body = {
+      model: tryModel,
+      messages: [
+        { role: 'system', content: 'Kamu adalah AI extractor data resi pengiriman Indonesia.' },
+        {
+          role: 'user',
+          content: 'Ekstrak data dari gambar resi ini dan output JSON valid saja.',
+          images: [imageContent]
+        }
+      ],
+      format: 'json',
+      stream: false
+    };
+ 
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        // Timeout 60 detik per request
+        signal: AbortSignal.timeout(60_000),
+        body: JSON.stringify(body)
+      });
+ 
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        // Jika model gagal (bukan support vision), coba model selanjutnya
+        if (tryModel !== model) {
+          continue; // Coba model berikutnya
+        }
+        // Jika model utama gagal dengan error, return error
+        return {
+          filename,
+          ok: false,
+          error: `KiosAPI HTTP ${res.status}: ${errText.slice(0, 200)}`
+        };
       }
-    ],
-    format: 'json',
-    stream: false
-  };
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      // Timeout 60 detik per request
-      signal: AbortSignal.timeout(60_000),
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
+ 
+      const json = await res.json().catch(() => ({} as any));
+      const content: string = json?.choices?.[0]?.message?.content || json?.response || '';
+      const parsed = tryParseJson(content);
+      if (!parsed) {
+        // Jika output bukan JSON valid, coba model berikutnya
+        if (tryModel !== model) {
+          continue;
+        }
+        return {
+          filename,
+          ok: false,
+          raw: content.slice(0, 500),
+          error: 'Model tidak mengembalikan JSON valid.'
+        };
+      }
+      return {
+        filename,
+        ok: true,
+        data: normalizeKeys(parsed)
+      };
+    } catch (e: any) {
+      // Jika error dan bukan model utama, coba model berikutnya
+      if (tryModel !== model) {
+        continue;
+      }
       return {
         filename,
         ok: false,
-        error: `Ollama HTTP ${res.status}: ${errText.slice(0, 200)}`
+        error: e?.message || 'Gagal memanggil KiosAPI'
       };
     }
-
-    const json = await res.json().catch(() => ({} as any));
-    const content: string = json?.message?.content || json?.response || '';
-    const parsed = tryParseJson(content);
-    if (!parsed) {
-      return {
-        filename,
-        ok: false,
-        raw: content.slice(0, 500),
-        error: 'Model tidak mengembalikan JSON valid.'
-      };
-    }
-    return {
-      filename,
-      ok: true,
-      data: normalizeKeys(parsed)
-    };
-  } catch (e: any) {
-    return {
-      filename,
-      ok: false,
-      error: e?.message || 'Gagal memanggil Ollama'
-    };
   }
+ 
+  // Semua model gagal
+  return {
+    filename,
+    ok: false,
+    error: 'Semua model KiosAPI gagal (bisa karena gambar tidak support vision di model yang dicoba).'
+  };
 }
-
-/** Ekstrak paralel (batch 5) untuk banyak gambar. */
-export async function extractResiBatch(
+ 
+/** Ekstrak batch menggunakan KiosAPI dengan fallback multi-model. */
+export async function extractResiBatchKiosapi(
   items: { filename: string; base64: string; mimeType?: string }[],
   concurrency: number = 5
 ): Promise<ExtractedResi[]> {
