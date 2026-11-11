@@ -4,17 +4,17 @@
 // Service untuk ekstrak data resi dari gambar via KiosAPI.
 //
 // Alur:
-//   1. Kirim gambar ke KiosAPI /v1/chat/completions (format OpenAI-compatible)
-//   2. Gambar dikirim sebagai content part `image_url` di dalam array content
-//      user — BUKAN field `images` (itu format Ollama, tidak dibaca KiosAPI)
-//   3. Jika satu model gagal (tidak support vision / error / bukan JSON),
-//      otomatis coba model berikutnya dari daftar fallback
+//   1. Kirim gambar ke KiosAPI /v1/chat/completions (OpenAI-compatible)
+//   2. Format vision WAJIB: content = [{ type: "text" }, { type: "image_url" }]
+//      (format lama `images: [...]` + `format: "json"` adalah format Ollama,
+//       TIDAK dikenali KiosAPI dan selalu ditolak)
+//   3. Fallback ke model berikutnya kalau model utama gagal
 //
 // Env var:
-//   - KIOSAPI_API_KEY          (required)
+//   - KIOSAPI_API_KEY          (wajib)
 //   - KIOSAPI_BASE_URL         (default: https://kiosapi.com)
-//   - KIOSAPI_MODEL            (default: agnes-2.5-flash)
-//   - KIOSAPI_FALLBACK_MODELS  (default: glm-5.3-flash,gemini-2.0-flash)
+//   - KIOSAPI_MODEL            (default: agnes-3.0-flash)
+//   - KIOSAPI_FALLBACK_MODELS  (default: agnes-2.5-flash)
 // ====================================================================
 
 export interface ExtractedResi {
@@ -37,48 +37,85 @@ export interface ExtractedResi {
   error?: string;
 }
 
-// Model vision dari Free group KiosAPI yang didukung.
-// Lihat dokumentasi: https://docs.kiosapi.com
-const KIOSAPI_VISION_MODELS = [
-  'agnes-2.5-flash',       // Support vision: image understanding, image URL inputs
-  'glm-5.3-flash',         // Support vision
-  'gemini-2.0-flash',      // Vision capable Google Gemini
-  'glm-5.3',               // Vision capable GLM
-  'qwen3.8-flash',         // Vision capable Qwen
-  'deepseek-v4-flash-vision-exp-free' // Vision capable DeepSeek (free)
-] as const;
+export const KIOSAPI_BASE_URL = 'https://kiosapi.com';
+export const KIOSAPI_DEFAULT_MODEL = 'agnes-3.0-flash';
+export const KIOSAPI_FALLBACK_MODELS_DEFAULT = 'agnes-2.5-flash';
 
-type KiosapiVisionModel = typeof KIOSAPI_VISION_MODELS[number];
+/**
+ * Samakan format base URL. Dokumentasi KiosAPI memakai dua gaya:
+ *   - host saja          : https://kiosapi.com
+ *   - base OpenAI lengkap: https://kiosapi.com/v1
+ * Keduanya diterima di sini, lalu endpoint dibentuk sebagai `${base}/v1/...`.
+ * Ini mencegah URL ganda `/v1/v1/chat/completions`.
+ */
+export function normalizeKiosapiBaseUrl(raw?: string): string {
+  const value = (raw || KIOSAPI_BASE_URL).trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+  return value || KIOSAPI_BASE_URL;
+}
 
-// Konfigurasi dasar
-export const KIOSAPI_BASE_URL = "https://kiosapi.com";
-export const KIOSAPI_DEFAULT_MODEL = "agnes-2.5-flash";
-export const KIOSAPI_FALLBACK_MODELS_DEFAULT = "glm-5.3-flash,gemini-2.0-flash";
+function isPlaceholderKey(value: string): boolean {
+  if (!value) return true;
+  const v = value.toLowerCase();
+  return (
+    v === 'your_kiosapi_api_key_here' ||
+    v === 'sk-xxx' ||
+    v.startsWith('your_') ||
+    v.startsWith('replace_') ||
+    v.startsWith('change_me')
+  );
+}
 
-/** Prompt sistem: minta satu objek JSON valid tanpa teks tambahan. */
-const RESI_SYSTEM_PROMPT = [
-  'Kamu adalah AI ekstraktor data resi pengiriman Indonesia.',
-  'Baca gambar resi/kwitansi pengiriman lalu kembalikan HANYA satu objek JSON valid.',
-  'Tanpa penjelasan, tanpa markdown, tanpa code fence.',
-  'Skema JSON yang wajib dipakai:',
-  '{"pengirim":string|null,"penerima":string|null,"tujuan":string|null,"tanggalKirim":string|null,"noResi":string|null,"alamat":string|null,"harga":number|null,"loadKg":number|null,"jumlahBarang":number|null,"ekspedisi":string|null,"asuransi":number|null}',
-  'Aturan: angka tanpa pemisah ribuan; tanggal format YYYY-MM-DD bila terbaca;',
-  'isi null bila data tidak ada di gambar; jangan mengarang data.'
-].join('\n');
+export function hasUsableKiosapiKey(apiKey?: string): boolean {
+  const key = (apiKey ?? process.env.KIOSAPI_API_KEY ?? '').trim();
+  return Boolean(key) && !isPlaceholderKey(key);
+}
 
-const RESI_USER_PROMPT =
-  'Ekstrak seluruh data resi pada gambar ini sesuai skema JSON.';
+export interface KiosapiRuntimeConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  fallbackModels: string[];
+}
 
-/** Tolerant JSON parser — handles model output yang disertai teks lain. */
+/** Baca konfigurasi KiosAPI dari environment (tanpa throw). */
+export function getKiosapiRuntimeConfig(): KiosapiRuntimeConfig {
+  const apiKey = (process.env.KIOSAPI_API_KEY || '').trim();
+  const baseUrl = normalizeKiosapiBaseUrl(process.env.KIOSAPI_BASE_URL);
+  const model = (process.env.KIOSAPI_MODEL || KIOSAPI_DEFAULT_MODEL).trim() || KIOSAPI_DEFAULT_MODEL;
+  const fallbackModels = (process.env.KIOSAPI_FALLBACK_MODELS || KIOSAPI_FALLBACK_MODELS_DEFAULT)
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean)
+    .filter((m) => m !== model);
+
+  return { apiKey, baseUrl, model, fallbackModels };
+}
+
+/** Konfigurasi untuk request; lempar error yang jelas kalau key belum ada. */
+function getKiosapiConfig(): KiosapiRuntimeConfig {
+  const config = getKiosapiRuntimeConfig();
+  if (!hasUsableKiosapiKey(config.apiKey)) {
+    throw new Error(
+      'KIOSAPI_API_KEY tidak ditemukan di environment variable.\n\n' +
+        'Langkah setup:\n' +
+        '1. Daftar di https://kiosapi.com\n' +
+        '2. Buat API key di Console -> Tokens, pilih group yang sesuai model\n' +
+        '3. Set KIOSAPI_API_KEY di environment (Vercel: Settings > Environment Variables, lokal: .env.local)\n' +
+        '4. Deploy ulang aplikasi\n\n' +
+        'Model default: ' + KIOSAPI_DEFAULT_MODEL + ' (bisa diganti lewat KIOSAPI_MODEL).'
+    );
+  }
+  return config;
+}
+
+/** Tolerant JSON parser — handles model output yang disertai teks/markdown. */
 function tryParseJson(text: string): any | null {
   if (!text) return null;
-  // Strip markdown code fences kalau ada
   let cleaned = text.trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Cari JSON object bounds
     const first = cleaned.indexOf('{');
     const last = cleaned.lastIndexOf('}');
     if (first >= 0 && last > first) {
@@ -116,9 +153,31 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
   };
   const num = (v: any): number | null => {
     if (v == null || v === '') return null;
-    if (typeof v === 'number') return v;
-    const cleaned = String(v).replace(/[^0-9.-]/g, '');
-    const n = parseFloat(cleaned);
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+
+    // Format Indonesia: "Rp 25.000" = 25000, "1,5" = 1.5.
+    let s = String(v).trim().replace(/[^0-9.,-]/g, '');
+    if (!s) return null;
+
+    const hasDot = s.includes('.');
+    const hasComma = s.includes(',');
+    if (hasDot && hasComma) {
+      // Separator terakhir adalah desimal.
+      if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+        s = s.replace(/\./g, '').replace(',', '.');
+      } else {
+        s = s.replace(/,/g, '');
+      }
+    } else if (hasComma) {
+      s = s.replace(',', '.');
+    } else if (hasDot) {
+      const parts = s.split('.');
+      const last = parts[parts.length - 1];
+      // "25.000" / "1.234.567" = pemisah ribuan, bukan desimal.
+      if (parts.length > 2 || last.length === 3) s = parts.join('');
+    }
+
+    const n = parseFloat(s);
     return isNaN(n) ? null : n;
   };
   return {
@@ -136,36 +195,61 @@ function normalizeKeys(input: any): ExtractedResi['data'] {
   };
 }
 
-/** KiosAPI Configuration — lempar error kalau key belum ada */
-function getKiosapiConfig() {
-  const apiKey = process.env.KIOSAPI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("KIOSAPI_API_KEY tidak ditemukan di environment variable.\n\nLangkah setup:\n1. Daftar di https://kiosapi.com\n2. Buat account dan verifikasi Telegram (untuk Free group)\n3. Buat API key di Console -> Tokens, pilih grup \"Free\"\n4. Set KIOSAPI_API_KEY di environment (Vercel: Settings > Environment Variables, lokal: .env.local)\n5. Deploy ulang aplikasi\n\n⚠️ Penting: Gunakan grup \"Free\" saat membuat token, bukan grup lain.\n\nModel Free group yang tersedia (gratis, 0 cost): agnes-2.5-flash, glm-5.3-flash, gemini-2.0-flash, glm-5.3, qwen3.8-flash, dll.\n\nJika belum punya key, fitur AI Ekstrak Resi akan tampil \"tidak terhubung\".");
-  }
-  // Normalisasi: buang trailing slash dan suffix "/v1" agar pemanggilan
-  // `${baseUrl}/v1/chat/completions` tidak menjadi "/v1/v1/...".
-  const baseUrl = (process.env.KIOSAPI_BASE_URL || "https://kiosapi.com")
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/v1$/, "");
-  const model = process.env.KIOSAPI_MODEL || "agnes-2.5-flash";
-  const fallbackModels = (process.env.KIOSAPI_FALLBACK_MODELS || "glm-5.3-flash,gemini-2.0-flash")
-    .split(",")
-    .map((m: string) => m.trim())
-    .filter(Boolean);
-  return { apiKey, baseUrl, model, fallbackModels };
+const SYSTEM_PROMPT =
+  'Kamu adalah AI OCR data resi pengiriman Indonesia. ' +
+  'Jawab HANYA dengan satu objek JSON valid, tanpa markdown dan tanpa penjelasan.';
+
+const USER_PROMPT = `Baca gambar resi ini dan ekstrak datanya.
+
+Balas dengan JSON persis berstruktur ini:
+{
+  "ekspedisi": "nama kurir, mis. JNE / J&T / SiCepat / J&T Cargo",
+  "pengirim": "nama pengirim",
+  "penerima": "nama penerima",
+  "tujuan": "kota/kabupaten tujuan",
+  "tanggalKirim": "tanggal kirim (YYYY-MM-DD atau teks apa adanya)",
+  "noResi": "nomor resi",
+  "alamat": "alamat lengkap penerima",
+  "harga": 0,
+  "loadKg": 0,
+  "jumlahBarang": 0,
+  "asuransi": 0
 }
 
-/** Build image content part untuk format vision OpenAI-compatible. */
-function buildKiosapiImageContent(imageBase64: string, mimeType: string) {
-  const cleanBase64 = imageBase64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+Aturan:
+- Jika field tidak ada atau tidak terbaca, isi null. Jangan mengarang.
+- harga, loadKg, jumlahBarang, dan asuransi harus angka murni tanpa titik, koma, atau "Rp".
+- noResi tanpa spasi.
+- loadKg dalam kilogram.`;
+
+/** Bagian gambar untuk format vision OpenAI-compatible. */
+function buildImagePart(imageBase64: string, mimeType: string) {
+  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
   return {
-    type: "image_url" as const,
+    type: 'image_url' as const,
     image_url: {
-      url: `data:${mimeType};base64,${cleanBase64}`,
-      detail: "auto" as const
+      url: `data:${mimeType || 'image/jpeg'};base64,${cleanBase64}`
     }
   };
+}
+
+/** Ambil teks dari message.content yang bisa string, array parts, atau object. */
+function contentToText(content: any): string {
+  if (typeof content === 'string') return content;
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    return JSON.stringify(content);
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
 }
 
 /** Ekstrak satu gambar menggunakan KiosAPI dengan fallback multi-model. */
@@ -176,55 +260,58 @@ export async function extractResiFromImage(
 ): Promise<ExtractedResi> {
   const { apiKey, baseUrl, model, fallbackModels } = getKiosapiConfig();
 
-  const imageContent = buildKiosapiImageContent(imageBase64, mimeType);
-
-  // Model utama + fallback (tanpa duplikat).
-  const modelsToTry: string[] = [model, ...fallbackModels.filter((m) => m !== model)];
-  const url = `${baseUrl}/v1/chat/completions`;
-
-  let lastError = 'Semua model KiosAPI gagal.';
+  const modelsToTry = Array.from(new Set([model, ...fallbackModels]));
+  const imagePart = buildImagePart(imageBase64, mimeType);
+  let lastError = '';
 
   for (const tryModel of modelsToTry) {
-    const body = {
-      model: tryModel,
-      messages: [
-        { role: 'system', content: RESI_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          // ✅ Format vision OpenAI-compatible: gambar ada di dalam array
-          // content. Sebelumnya memakai field `images` (format Ollama)
-          // sehingga KiosAPI tidak pernah menerima gambarnya.
-          content: [
-            { type: 'text', text: RESI_USER_PROMPT },
-            imageContent
-          ]
-        }
-      ],
-      stream: false
-    };
-
     try {
-      const res = await fetch(url, {
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`
         },
         signal: AbortSignal.timeout(60_000),
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          model: tryModel,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: [{ type: 'text', text: USER_PROMPT }, imagePart]
+            }
+          ],
+          temperature: 0,
+          max_tokens: 1024,
+          stream: false
+        })
       });
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
-        lastError = `KiosAPI HTTP ${res.status} (${tryModel}): ${errText.slice(0, 200)}`;
-        // Model error / tidak support vision → coba model berikutnya.
+        lastError = `KiosAPI HTTP ${res.status} (${tryModel}): ${errText.slice(0, 300) || 'tanpa pesan'}`;
+        // 401/403 tidak akan berubah walau ganti model.
+        if (res.status === 401 || res.status === 403) {
+          return {
+            filename,
+            ok: false,
+            error: `${lastError}. Periksa KIOSAPI_API_KEY dan group token.`
+          };
+        }
         continue;
       }
 
-      const json: any = await res.json().catch(() => ({}));
-      const content: string = json?.choices?.[0]?.message?.content || '';
+      const json = await res.json().catch(() => ({} as any));
+      const apiError = json?.error;
+      if (apiError) {
+        lastError = `KiosAPI error (${tryModel}): ${apiError?.message || JSON.stringify(apiError)}`;
+        continue;
+      }
+
+      const content = contentToText(json?.choices?.[0]?.message?.content ?? json?.response);
       const parsed = tryParseJson(content);
-      if (!parsed || typeof parsed !== 'object') {
+      if (!parsed) {
         lastError = `Model ${tryModel} tidak mengembalikan JSON valid.`;
         continue;
       }
@@ -235,15 +322,16 @@ export async function extractResiFromImage(
         data: normalizeKeys(parsed)
       };
     } catch (e: any) {
-      lastError = `${tryModel}: ${e?.message || 'Gagal memanggil KiosAPI'}`;
-      continue;
+      lastError = e?.name === 'TimeoutError'
+        ? `Model ${tryModel} timeout setelah 60 detik.`
+        : `${tryModel}: ${e?.message || 'Gagal memanggil KiosAPI'}`;
     }
   }
 
   return {
     filename,
     ok: false,
-    error: lastError
+    error: lastError || 'Semua model KiosAPI gagal memproses gambar.'
   };
 }
 
@@ -256,9 +344,7 @@ export async function extractResiBatchKiosapi(
   for (let i = 0; i < items.length; i += concurrency) {
     const slice = items.slice(i, i + concurrency);
     const chunk = await Promise.all(
-      slice.map((it) =>
-        extractResiFromImage(it.filename, it.base64, it.mimeType || 'image/jpeg')
-      )
+      slice.map((it) => extractResiFromImage(it.filename, it.base64, it.mimeType || 'image/jpeg'))
     );
     results.push(...chunk);
   }

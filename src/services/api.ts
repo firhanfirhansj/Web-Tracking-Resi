@@ -119,7 +119,7 @@ export async function trackWaybillsBulk(
   const json = await response.json().catch(() => ({} as any));
 
   if (!response.ok || !Array.isArray(json?.results)) {
-    throw new Error(json?.message || 'Gagal menghubungi server tracking');
+    throw new Error(json?.message || `Gagal menghubungi server tracking (HTTP ${response.status})`);
   }
 
   const resultsMap = new Map<string, BulkTrackItem>();
@@ -365,26 +365,25 @@ export async function fetchPricelistCities(): Promise<PricelistCity> {
   return { origin: json?.data?.origin || [], destination: json?.data?.destination || [] };
 }
 
-// ----------------- AI Ekstrak Resi -----------------
+// ----------------- AI Ekstrak Resi (KiosAPI) -----------------
 
-// Vercel membatasi body request serverless function sekitar 4.5 MB, jadi
-// gambar dikirim per batch. Sebelumnya semua gambar dikirim dalam SATU
-// request → upload banyak resi langsung ditolak HTTP 413.
-const MAX_REQUEST_BYTES = 3.5 * 1024 * 1024;
-const MAX_IMAGE_EDGE = 2400;
-const COMPRESS_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
+// Batas Vercel untuk body request serverless adalah 4,5 MB. Kompres gambar
+// besar di browser dan kirim per batch supaya upload 1–50 foto tidak
+// ditolak Vercel sebelum sampai ke API.
+const MAX_IMAGE_EDGE = 1600;
+const MAX_IMAGE_BYTES = 1_500_000;
+const MAX_BATCH_BYTES = 3_500_000;
+const MAX_BATCH_FILES = 5;
 
-/**
- * Perkecil foto besar (mis. jepretan HP > 1.5 MB) sebelum upload. Teks resi
- * tetap terbaca, tapi payload jauh lebih kecil sehingga tidak kena limit.
- */
-async function compressImageIfNeeded(file: File): Promise<File> {
-  if (file.size <= COMPRESS_THRESHOLD_BYTES) return file;
+/** Perkecil foto besar agar muat di limit Vercel; kalau gagal, pakai aslinya. */
+async function compressImage(file: File): Promise<File> {
+  if (file.size <= MAX_IMAGE_BYTES || typeof createImageBitmap !== 'function') return file;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
     const width = Math.max(1, Math.round(bitmap.width * scale));
     const height = Math.max(1, Math.round(bitmap.height * scale));
+
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -395,71 +394,107 @@ async function compressImageIfNeeded(file: File): Promise<File> {
     }
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close?.();
+
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.9)
+      canvas.toBlob(resolve, 'image/jpeg', 0.85)
     );
     if (!blob || blob.size >= file.size) return file;
-    const name = file.name.replace(/\.(png|webp|heic|heif|bmp)$/i, '.jpg');
-    return new File([blob], name, { type: 'image/jpeg' });
+    return new File([blob], file.name, { type: 'image/jpeg' });
   } catch {
-    // Format yang tidak bisa di-decode browser (mis. HEIC) → pakai file asli.
     return file;
   }
 }
 
-/** Pecah file jadi batch yang aman terhadap limit body request. */
-function chunkBySize(files: File[], maxBytes: number): File[][] {
-  const batches: File[][] = [];
-  let current: File[] = [];
-  let currentBytes = 0;
-  for (const file of files) {
-    if (current.length > 0 && currentBytes + file.size > maxBytes) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push(file);
-    currentBytes += file.size;
-  }
-  if (current.length > 0) batches.push(current);
-  return batches;
-}
-
 /**
- * Kirim 1–50 gambar ke /api/ai/extract-resi (KiosAPI). Gambar dikirim
- * bertahap per batch agar tidak melewati limit body Vercel (HTTP 413).
+ * Kirim 1–50 gambar ke /api/ai/extract-resi (KiosAPI, model default
+ * agnes-3.0-flash). File dikirim per batch kecil agar tidak melewati limit
+ * body Vercel, dan hasil tetap terkumpul walau satu batch gagal.
  */
-export async function extractResiWithAI(files: File[]): Promise<ExtractedResi[]> {
+export async function extractResiWithAI(
+  files: File[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<ExtractedResi[]> {
   if (files.length === 0) return [];
   if (files.length > 50) {
     throw new Error('Maksimal 50 gambar per request.');
   }
 
-  const prepared = await Promise.all(files.map(compressImageIfNeeded));
-  const batches = chunkBySize(prepared, MAX_REQUEST_BYTES);
-  const results: ExtractedResi[] = [];
+  const prepared = await Promise.all(files.map(compressImage));
 
-  for (const batch of batches) {
-    const fd = new FormData();
-    for (const file of batch) fd.append('files', file, file.name);
-
-    const res = await fetch('/api/ai/extract-resi', {
-      method: 'POST',
-      body: fd
-    });
-    const json = await res.json().catch(() => null);
-
-    if (!res.ok || json?.status !== 200) {
-      if (res.status === 413) {
-        throw new Error(
-          'Gambar terlalu besar untuk dikirim (HTTP 413). Kurangi jumlah gambar atau perkecil ukuran foto, lalu coba lagi.'
-        );
-      }
-      throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
-    }
-    results.push(...((json?.results || []) as ExtractedResi[]));
+  // Kalau browser tidak bisa mengompres (mis. HEIC), jangan kirim file yang
+  // pasti ditolak Vercel dengan error 413 yang membingungkan.
+  const tooBig = prepared.find((file) => file.size > MAX_BATCH_BYTES);
+  if (tooBig) {
+    throw new Error(
+      `Foto "${tooBig.name}" terlalu besar (${(tooBig.size / 1024 / 1024).toFixed(1)} MB). ` +
+        'Kecilkan foto ke bawah 3 MB atau ubah ke JPG, lalu coba lagi.'
+    );
   }
 
+  // Susun batch berdasarkan jumlah file dan total ukuran.
+  const batches: File[][] = [];
+  let batch: File[] = [];
+  let batchBytes = 0;
+  for (const file of prepared) {
+    if (batch.length > 0 && (batch.length >= MAX_BATCH_FILES || batchBytes + file.size > MAX_BATCH_BYTES)) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(file);
+    batchBytes += file.size;
+  }
+  if (batch.length > 0) batches.push(batch);
+
+  const results: ExtractedResi[] = [];
+  let completed = 0;
+
+  for (const chunk of batches) {
+    const fd = new FormData();
+    for (const file of chunk) fd.append('files', file, file.name);
+
+    let chunkResults: ExtractedResi[] = [];
+    let batchError: string | null = null;
+    try {
+      const res = await fetch('/api/ai/extract-resi', { method: 'POST', body: fd });
+      const json = await res.json().catch(() => ({} as any));
+      if (!res.ok || json?.status !== 200) {
+        throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
+      }
+      chunkResults = (json?.results || []) as ExtractedResi[];
+      if (chunkResults.length === 0) {
+        chunkResults = chunk.map((file) => ({
+          filename: file.name,
+          ok: false,
+          error: 'Server tidak mengembalikan hasil.'
+        }));
+      }
+    } catch (e: any) {
+      batchError = e?.message || 'Gagal extract resi';
+      chunkResults = chunk.map((file) => ({
+        filename: file.name,
+        ok: false,
+        error: batchError as string
+      }));
+    }
+
+    results.push(...chunkResults);
+    completed += chunk.length;
+    onProgress?.(Math.min(completed, files.length), files.length);
+
+    // Error batch biasanya sistemik (key/quota/jaringan). Hentikan sisa
+    // batch dan tandai gagal supaya user tidak menunggu berkali-kali.
+    if (batchError) {
+      for (const file of prepared.slice(completed)) {
+        results.push({ filename: file.name, ok: false, error: batchError });
+      }
+      break;
+    }
+  }
+
+  if (results.length > 0 && results.every((r) => !r.ok)) {
+    throw new Error(results[0].error || 'Gagal mengekstrak data resi.');
+  }
   return results;
 }
 
@@ -469,23 +504,19 @@ export async function getAiHealth(): Promise<{
   model: string;
   baseUrl: string;
   apiKeyPresent: boolean;
+  modelAvailable?: boolean;
   error?: string;
 }> {
   const res = await fetch('/api/ai/health');
   const json = await res.json().catch(() => ({} as any));
-  const rawModel = json?.model || 'gemma4:31b-cloud';
-  // ✅ perbaikan.txt #2: Normalisasi tampilan model.
-  // Backend default sudah "gemma4:31b-cloud", tapi kalau user masih
-  // melihat "minimax-m3:cloud" itu artinya env var Vercel masih carry-over
-  // dari deploy sebelumnya (atau cache lama). Untuk konsistensi UI kita
-  // terjemahkan ke nama model yang sebenarnya dipakai.
-  const displayModel = /minimax/i.test(rawModel) ? 'gemma4:31b-cloud' : rawModel;
   return {
     configured: Boolean(json?.configured),
     reachable: Boolean(json?.reachable),
-    model: displayModel,
+    model: json?.model || 'agnes-3.0-flash',
     baseUrl: json?.baseUrl || '',
     apiKeyPresent: Boolean(json?.apiKeyPresent),
+    modelAvailable:
+      typeof json?.modelAvailable === 'boolean' ? json.modelAvailable : undefined,
     error: json?.error
   };
 }

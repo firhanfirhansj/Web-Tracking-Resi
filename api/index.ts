@@ -6,7 +6,11 @@ import Busboy from 'busboy';
 // "ERR_MODULE_NOT_FOUND: Cannot find module '/var/task/api/_lib/pricelist'".
 import { computeCargoCost } from './_lib/pricelist.js';
 import { getUniqueCities } from './_lib/xlsxLoader.js';
-import { extractResiBatchKiosapi } from './_lib/aiExtract.js';
+import {
+  extractResiBatchKiosapi,
+  getKiosapiRuntimeConfig,
+  hasUsableKiosapiKey
+} from './_lib/aiExtract.js';
 
 // =====================================================================
 // LacakResi Pro — Vercel Serverless Entry
@@ -52,11 +56,10 @@ app.get('/api/debug/startup', (_req, res) => {
         // Hanya cek panjang & ada-tidak, jangan expose nilai
         BINDERBYTE_API_KEY_set: Boolean(process.env.BINDERBYTE_API_KEY),
         BINDERBYTE_API_KEY_len: (process.env.BINDERBYTE_API_KEY || '').length,
-        OLLAMA_BASE_URL_set: Boolean(process.env.OLLAMA_BASE_URL),
-        OLLAMA_API_KEY_set: Boolean(process.env.OLLAMA_API_KEY),
-        OLLAMA_API_KEY_len: (process.env.OLLAMA_API_KEY || '').length,
-        OLLAMA_MODEL_set: Boolean(process.env.OLLAMA_MODEL),
-        OLLAMA_MODEL_val: process.env.OLLAMA_MODEL || '(unset)',
+        KIOSAPI_API_KEY_set: Boolean(process.env.KIOSAPI_API_KEY),
+        KIOSAPI_API_KEY_len: (process.env.KIOSAPI_API_KEY || '').trim().length,
+        KIOSAPI_BASE_URL_val: process.env.KIOSAPI_BASE_URL || '(default: https://kiosapi.com)',
+        KIOSAPI_MODEL_val: process.env.KIOSAPI_MODEL || '(default: agnes-3.0-flash)',
         VERCEL: process.env.VERCEL || '(unset)',
         VERCEL_ENV: process.env.VERCEL_ENV || '(unset)',
         NODE_ENV: process.env.NODE_ENV || '(unset)'
@@ -87,24 +90,6 @@ app.get('/api/debug/startup', (_req, res) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ✅ FIX Bug #5: Tambahkan error handler global. Sebelumnya function
-// crash tanpa body response — Vercel return 500 kosong. Sekarang setiap
-// error yang tidak ter-handle akan return JSON informatif.
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  // eslint-disable-next-line no-console
-  console.error('[express error]', err?.stack || err);
-  try {
-    res.status(500).json({
-      status: 500,
-      message: err?.message || 'Internal server error',
-      error: err?.name || 'UNKNOWN_ERROR'
-    });
-  } catch {
-    // Jika response sudah ter-kirim, fallback ke end()
-    try { res.end(); } catch { /* ignore */ }
-  }
-});
-
 // ------------------------------------------------------------------
 // Config
 // ------------------------------------------------------------------
@@ -129,7 +114,8 @@ function isPlaceholder(value: string): boolean {
   const v = value.toLowerCase();
   return (
     v === 'your_binderbyte_api_key_here' ||
-    v === 'your_ollama_cloud_api_key_here' ||
+    v === 'your_kiosapi_api_key_here' ||
+    v === 'sk-xxx' ||
     v.startsWith('your_') ||
     v.startsWith('replace_') ||
     v.startsWith('change_me')
@@ -170,17 +156,35 @@ function normalizeStatus(
 /** Normalize a single BinderByte /v1/track response. */
 function normalizeTrackResponse(payload: any, fallbackAwb: string, fallbackCourier: string) {
   const data = payload?.data || {};
-  const summary = data.summary || {};
-  const status = normalizeStatus(summary.status, summary.delivered);
+  const rawSummary = data.summary || {};
+  const detail = data.detail || {};
+  const status = normalizeStatus(rawSummary.status, rawSummary.delivered);
+
+  // ✅ Dokumentasi BinderByte /v1/track: pengirim, penerima, asal, dan tujuan
+  // ada di `data.detail`, bukan `data.summary`. Dulu field ini dibaca dari
+  // summary sehingga UI menampilkan "-" semua walau tracking sukses.
+  const summary = {
+    ...rawSummary,
+    awb: rawSummary.awb || rawSummary.waybill_number || data.awb || data.waybill_number || fallbackAwb,
+    waybill_number:
+      rawSummary.waybill_number || rawSummary.awb || data.awb || data.waybill_number || fallbackAwb,
+    courier: fallbackCourier,
+    courierName: rawSummary.courier || rawSummary.courier_name || fallbackCourier.toUpperCase(),
+    shipper: rawSummary.shipper || detail.shipper || '',
+    receiver: rawSummary.receiver || detail.receiver || '',
+    origin: rawSummary.origin || detail.origin || '',
+    destination: rawSummary.destination || detail.destination || ''
+  };
+
   return {
-    awb: summary.waybill_number || data.waybill_number || fallbackAwb,
-    courier: summary.courier_code || fallbackCourier,
-    courierName: summary.courier_name || fallbackCourier.toUpperCase(),
-    trackId: summary.track_id || '',
+    awb: summary.awb,
+    courier: fallbackCourier,
+    courierName: summary.courierName,
+    trackId: rawSummary.track_id || '',
     status,
-    statusText: summary.status || (status === 'DELIVERED' ? 'DELIVERED' : 'ON PROCESS'),
+    statusText: rawSummary.status || (status === 'DELIVERED' ? 'DELIVERED' : 'ON PROCESS'),
     summary,
-    detail: data.detail,
+    detail,
     history: data.history || [],
     lastChecked: new Date().toISOString()
   };
@@ -688,9 +692,11 @@ app.post('/api/ai/extract-resi', (req, res) => {
         results
       });
     } catch (e: any) {
-      return res.status(500).json({
-        status: 500,
-        message: `AI extract error: ${e?.message || 'unknown'}`
+      const message = String(e?.message || 'unknown');
+      const status = message.includes('KIOSAPI_API_KEY') ? 503 : 500;
+      return res.status(status).json({
+        status,
+        message: `AI extract error: ${message}`
       });
     }
   });
@@ -699,55 +705,90 @@ app.post('/api/ai/extract-resi', (req, res) => {
 });
 
 // --- AI Health check (KiosAPI) ---
+// Memanggil GET /v1/models dengan API key asli. Ini membuktikan tiga hal
+// sekaligus: key valid, server reachable, dan model vision tersedia untuk
+// group token tersebut. Tidak pernah mengembalikan nilai API key.
 app.get('/api/ai/health', async (_req, res) => {
-  // Normalisasi base URL: buang trailing slash dan suffix "/v1" supaya
-  // KIOSAPI_BASE_URL boleh diisi "https://kiosapi.com" maupun
-  // "https://kiosapi.com/v1" tanpa menghasilkan "/v1/v1/...".
-  const baseUrl = (process.env.KIOSAPI_BASE_URL || 'https://kiosapi.com')
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/v1$/, '');
-  const apiKey = (process.env.KIOSAPI_API_KEY || '').trim();
-  const model = (process.env.KIOSAPI_MODEL || 'agnes-2.5-flash').trim();
-  const apiKeyPresent = Boolean(apiKey) && !isPlaceholder(apiKey);
+  const { apiKey, baseUrl, model } = getKiosapiRuntimeConfig();
+  const apiKeyPresent = hasUsableKiosapiKey(apiKey);
 
   if (!apiKeyPresent) {
     return res.json({
       status: 200,
+      provider: 'kiosapi',
       configured: false,
       reachable: false,
       model,
       baseUrl,
       apiKeyPresent: false,
-      error: 'KIOSAPI_API_KEY belum diisi'
+      error:
+        'KIOSAPI_API_KEY belum di-set (atau masih placeholder). Isi di Vercel Environment Variables lalu deploy ulang.'
     });
   }
 
   try {
-    // GET /v1/models adalah endpoint OpenAI-compatible untuk validasi key.
     const r = await fetch(`${baseUrl}/v1/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(8000)
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      signal: AbortSignal.timeout(10_000)
     });
+    const payload = await r.json().catch(() => ({} as any));
+    const ids: string[] = Array.isArray(payload?.data)
+      ? payload.data.map((m: any) => String(m?.id || '')).filter(Boolean)
+      : [];
+
+    // Kalau daftar model tidak bisa dibaca, jangan klaim model tidak tersedia.
+    const modelAvailable = ids.length > 0 ? ids.includes(model) : undefined;
+
+    let error: string | undefined;
+    if (!r.ok) {
+      error = payload?.error?.message || payload?.message || `KiosAPI HTTP ${r.status}`;
+    } else if (modelAvailable === false) {
+      error = `Model "${model}" tidak ada di daftar model untuk API key ini. Cek GET /v1/models atau ganti KIOSAPI_MODEL.`;
+    }
+
     return res.json({
       status: 200,
+      provider: 'kiosapi',
       configured: true,
       reachable: r.ok,
       model,
       baseUrl,
       apiKeyPresent: true,
-      ...(r.ok ? {} : { error: `KiosAPI HTTP ${r.status}` })
+      modelAvailable,
+      error
     });
   } catch (e: any) {
     return res.json({
       status: 200,
+      provider: 'kiosapi',
       configured: true,
       reachable: false,
       model,
       baseUrl,
       apiKeyPresent: true,
-      error: e?.message || 'Unreachable'
+      error: e?.message || 'KiosAPI tidak bisa dihubungi'
     });
+  }
+});
+
+// ✅ FIX Bug #5: Error handler global HARUS didaftarkan SETELAH semua route.
+// Kalau diletakkan sebelum route, Express tidak akan menemukannya saat route
+// melempar error → Vercel mengembalikan 500 HTML/kosong (bukan JSON) dan
+// frontend menampilkan "Gagal menghubungi server".
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // eslint-disable-next-line no-console
+  console.error('[express error]', err?.stack || err);
+  try {
+    res.status(500).json({
+      status: 500,
+      message: err?.message || 'Internal server error',
+      error: err?.name || 'UNKNOWN_ERROR'
+    });
+  } catch {
+    try { res.end(); } catch { /* ignore */ }
   }
 });
 

@@ -28,8 +28,8 @@ import {
 
 /**
  * ✅ Fitur Ekspor Data Resi dengan AI (perbaikan.txt #1).
- * User upload 1–50 gambar resi → AI (KiosAPI, default `agnes-2.5-flash`)
- * extract field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
+ * User upload 1–50 gambar resi → AI (KiosAPI `agnes-3.0-flash`) extract
+ * field-field penting → hasil bisa di-copy atau di-download CSV/Excel.
  */
 export const ResiExport: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -44,6 +44,8 @@ export const ResiExport: React.FC = () => {
     configured: boolean;
     reachable: boolean;
     model: string;
+    apiKeyPresent?: boolean;
+    modelAvailable?: boolean;
     error?: string;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -101,9 +103,10 @@ export const ResiExport: React.FC = () => {
     setResults([]);
     setProgress({ current: 0, total: files.length });
     try {
-      const data = await extractResiWithAI(files);
+      const data = await extractResiWithAI(files, (completed, total) =>
+        setProgress({ current: completed, total })
+      );
       setResults(data);
-      setProgress({ current: data.length, total: files.length });
     } catch (e: any) {
       setError(e.message || 'Gagal mengekstrak data resi.');
     } finally {
@@ -132,6 +135,8 @@ export const ResiExport: React.FC = () => {
 
   const successCount = results.filter((r) => r.ok).length;
   const failedCount = results.filter((r) => !r.ok).length;
+  // Model dianggap siap kalau server reachable DAN model tersedia untuk key.
+  const aiReady = Boolean(aiHealth?.reachable && aiHealth.modelAvailable !== false);
 
   // Format rupiah
   const formatRupiah = (val: number | null) => {
@@ -163,30 +168,33 @@ export const ResiExport: React.FC = () => {
         {aiHealth && (
           <div
             className={`mt-4 p-3 rounded-xl border flex items-start gap-3 text-xs ${
-              aiHealth.reachable
+              aiReady
                 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
                 : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
             }`}
           >
             <div className="mt-0.5">
-              {aiHealth.reachable ? (
+              {aiReady ? (
                 <CheckCircle2 className="w-4 h-4" />
               ) : (
                 <AlertTriangle className="w-4 h-4" />
               )}
             </div>
             <div>
-              {aiHealth.reachable ? (
+              {aiReady ? (
                 <div>
-                  <strong>AI siap.</strong> Model: <span className="font-mono">{aiHealth.model}</span>
+                  <strong>AI siap.</strong> Provider: KiosAPI • Model:{' '}
+                  <span className="font-mono">{aiHealth.model}</span>
                 </div>
               ) : (
                 <div>
-                  <strong>AI belum terhubung.</strong>{' '}
-                  {aiHealth.apiKeyPresent
-                    ? 'KiosAPI tidak bisa dihubungi — periksa KIOSAPI_BASE_URL atau koneksi internet.'
-                    : 'Isi KIOSAPI_API_KEY di file .env (lokal) atau Vercel Environment Variables (production) untuk mengaktifkan fitur AI Ekstrak Resi.'}{' '}
-                  Detail: {aiHealth.error || 'unreachable'}
+                  <strong>AI belum siap.</strong>{' '}
+                  {!aiHealth.apiKeyPresent
+                    ? 'Isi KIOSAPI_API_KEY di file .env (lokal) atau Vercel Environment Variables (production), lalu deploy ulang.'
+                    : aiHealth.reachable && aiHealth.modelAvailable === false
+                      ? `Model "${aiHealth.model}" tidak tersedia untuk API key ini. Cek daftar model di GET /v1/models atau ganti KIOSAPI_MODEL.`
+                      : 'KiosAPI tidak bisa dihubungi — periksa KIOSAPI_BASE_URL, API key, atau koneksi internet.'}{' '}
+                  {aiHealth.error && <span>Detail: {aiHealth.error}</span>}
                 </div>
               )}
             </div>

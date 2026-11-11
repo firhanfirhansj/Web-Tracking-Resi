@@ -6,6 +6,7 @@ export interface ExtractedResi {
   data?: {
     pengirim: string | null;
     penerima: string | null;
+    tujuan: string | null;
     tanggalKirim: string | null;
     noResi: string | null;
     alamat: string | null;

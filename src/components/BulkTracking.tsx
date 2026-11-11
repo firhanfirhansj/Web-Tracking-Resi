@@ -13,6 +13,7 @@ export const BulkTracking: React.FC = () => {
   );
   const [selectedDefaultCourier, setSelectedDefaultCourier] = useState<string>('jne');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [trackError, setTrackError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [items, setItems] = useState<BulkTrackItem[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -98,6 +99,7 @@ export const BulkTracking: React.FC = () => {
     if (targetItems.length === 0) return;
 
     setIsProcessing(true);
+    setTrackError(null);
     setProgress({ current: 0, total: targetItems.length });
 
     try {
@@ -127,8 +129,11 @@ export const BulkTracking: React.FC = () => {
       );
 
       setItems(results);
-    } catch (err) {
+    } catch (err: any) {
+      // ✅ Jangan telan error: sebelumnya kegagalan (mis. API key belum
+      // terpasang / server 500) hanya masuk console dan UI tampak diam.
       console.error(err);
+      setTrackError(err?.message || 'Gagal melacak resi. Coba lagi.');
     } finally {
       setIsProcessing(false);
     }
@@ -347,6 +352,17 @@ export const BulkTracking: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Tracking Error */}
+      {trackError && (
+        <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-300 text-sm flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+          <div>
+            <strong className="block">Gagal melacak resi</strong>
+            <span className="text-xs">{trackError}</span>
+          </div>
+        </div>
+      )}
 
       {/* Metrics Dashboard (If resi processed) */}
       {items.length > 0 && (
