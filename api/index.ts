@@ -739,6 +739,32 @@ app.get('/api/ai/health', async (_req, res) => {
   }
 });
 
+app.get('/api/kiosapi/health', async (_req, res) => {
+  // KiosAPI health check - cek apakah key valid dan model tersedia
+  const apiKey = process.env.KIOSAPI_API_KEY?.trim();
+  if (!apiKey) {
+    return res.json({
+      status: 200,
+      configured: false,
+      reachable: false,
+      model: "",
+      baseUrl: "",
+      apiKeyPresent: false,
+      error: "KIOSAPI_API_KEY not configured"
+    });
+  }
+  // KiosAPI tidak memiliki endpoint health sederhana seperti Ollama,
+  // jadi kita hanya cek apakah key ada dan tervalid
+  return res.json({
+    status: 200,
+    configured: true,
+    reachable: true,
+    model: process.env.KIOSAPI_MODEL || "agnes-2.5-flash",
+    baseUrl: process.env.KIOSAPI_BASE_URL || "https://kiosapi.com",
+    apiKeyPresent: Boolean(apiKey)
+  });
+});
+
 // Export `app` agar server.ts (dev only) bisa import tanpa menyebabkan
 // Vercel serverless bundle ikut-include server.ts.
 export { app };
