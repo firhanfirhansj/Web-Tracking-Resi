@@ -367,51 +367,100 @@ export async function fetchPricelistCities(): Promise<PricelistCity> {
 
 // ----------------- AI Ekstrak Resi -----------------
 
-/** Convert File → { filename, base64, mimeType }. */
-function fileToPayload(file: File): Promise<{ filename: string; base64: string; mimeType: string }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // result = "data:image/jpeg;base64,xxxxx"
-      const [meta, base64] = result.split(',');
-      const mimeType = meta.match(/data:([^;]+)/)?.[1] || file.type || 'image/jpeg';
-      resolve({ filename: file.name, base64, mimeType });
-    };
-    reader.onerror = () => reject(new Error(`Gagal membaca file ${file.name}`));
-    reader.readAsDataURL(file);
-  });
+// Vercel membatasi body request serverless function sekitar 4.5 MB, jadi
+// gambar dikirim per batch. Sebelumnya semua gambar dikirim dalam SATU
+// request → upload banyak resi langsung ditolak HTTP 413.
+const MAX_REQUEST_BYTES = 3.5 * 1024 * 1024;
+const MAX_IMAGE_EDGE = 2400;
+const COMPRESS_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
+
+/**
+ * Perkecil foto besar (mis. jepretan HP > 1.5 MB) sebelum upload. Teks resi
+ * tetap terbaca, tapi payload jauh lebih kecil sehingga tidak kena limit.
+ */
+async function compressImageIfNeeded(file: File): Promise<File> {
+  if (file.size <= COMPRESS_THRESHOLD_BYTES) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bitmap.close?.();
+      return file;
+    }
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close?.();
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.9)
+    );
+    if (!blob || blob.size >= file.size) return file;
+    const name = file.name.replace(/\.(png|webp|heic|heif|bmp)$/i, '.jpg');
+    return new File([blob], name, { type: 'image/jpeg' });
+  } catch {
+    // Format yang tidak bisa di-decode browser (mis. HEIC) → pakai file asli.
+    return file;
+  }
+}
+
+/** Pecah file jadi batch yang aman terhadap limit body request. */
+function chunkBySize(files: File[], maxBytes: number): File[][] {
+  const batches: File[][] = [];
+  let current: File[] = [];
+  let currentBytes = 0;
+  for (const file of files) {
+    if (current.length > 0 && currentBytes + file.size > maxBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(file);
+    currentBytes += file.size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
 }
 
 /**
- * Kirim 1–50 gambar ke /api/ai/extract-resi. Server akan forward ke
- * Ollama (default model: gemma4:31b-cloud) lalu kembalikan JSON terstruktur.
+ * Kirim 1–50 gambar ke /api/ai/extract-resi (KiosAPI). Gambar dikirim
+ * bertahap per batch agar tidak melewati limit body Vercel (HTTP 413).
  */
 export async function extractResiWithAI(files: File[]): Promise<ExtractedResi[]> {
   if (files.length === 0) return [];
   if (files.length > 50) {
     throw new Error('Maksimal 50 gambar per request.');
   }
-  const items = await Promise.all(files.map(fileToPayload));
-  const fd = new FormData();
-  for (const it of items) {
-    // Reconstruct File dari base64 agar backend dapat filename+mimetype
-    const byteString = atob(it.base64);
-    const ab = new ArrayBuffer(byteString.length);
-    const ia = new Uint8Array(ab);
-    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-    const file = new File([ab], it.filename, { type: it.mimeType });
-    fd.append('files', file, it.filename);
+
+  const prepared = await Promise.all(files.map(compressImageIfNeeded));
+  const batches = chunkBySize(prepared, MAX_REQUEST_BYTES);
+  const results: ExtractedResi[] = [];
+
+  for (const batch of batches) {
+    const fd = new FormData();
+    for (const file of batch) fd.append('files', file, file.name);
+
+    const res = await fetch('/api/ai/extract-resi', {
+      method: 'POST',
+      body: fd
+    });
+    const json = await res.json().catch(() => null);
+
+    if (!res.ok || json?.status !== 200) {
+      if (res.status === 413) {
+        throw new Error(
+          'Gambar terlalu besar untuk dikirim (HTTP 413). Kurangi jumlah gambar atau perkecil ukuran foto, lalu coba lagi.'
+        );
+      }
+      throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
+    }
+    results.push(...((json?.results || []) as ExtractedResi[]));
   }
-  const res = await fetch('/api/ai/extract-resi', {
-    method: 'POST',
-    body: fd
-  });
-  const json = await res.json().catch(() => ({} as any));
-  if (!res.ok || json?.status !== 200) {
-    throw new Error(json?.message || `HTTP ${res.status}: Gagal extract resi`);
-  }
-  return (json?.results || []) as ExtractedResi[];
+
+  return results;
 }
 
 export async function getAiHealth(): Promise<{
